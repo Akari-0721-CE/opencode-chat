@@ -366,8 +366,7 @@ function connectEvents() {
   if (eventSource) { eventSource.close(); eventSource = null; }
   eventsDir = activeDir;
   const qs = activeDir ? "?directory=" + encodeURIComponent(activeDir) : "";
-  const tok = window.__OC_TOKEN ? (qs ? "&" : "?") + "token=" + encodeURIComponent(window.__OC_TOKEN) : "";
-  const url = "/api/event" + qs + tok;
+  const url = "/api/event" + qs;
   eventSource = new EventSource(url);
   eventSource.onmessage = (e) => {
     try { handleEvent(JSON.parse(e.data)); } catch (err) { console.error(err); }

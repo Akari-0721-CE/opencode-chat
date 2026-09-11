@@ -1,8 +1,16 @@
 # opencode 自建前端 · 版本说明
 
-- 版本：v0.1.40
+- 版本：v0.1.41
 - 日期：2026-09-12
 - 组成：Python 代理 + 多文件前端 + opencode 插件
+
+## v0.1.41 变更（P1-a：代理收敛 + 令牌 Cookie）
+
+- **代理上游路径白名单**：`server.py` 的 `_proxy` 仅放行前端实际使用的上游接口——精确 `/config/providers`、`/experimental/tool/ids`、`/file`、`/path`、`/agent`、`/event`，前缀 `/session`、`/provider`、`/question`；其余一律 404 并记录 `[proxy] blocked`。可用环境变量 `OC_PROXY_DRYRUN=1` 切换为「仅记录不拦截」以便观察。收窄了「持有令牌即可调用 opencode 全量 API」的攻击面。
+- **令牌 Cookie 化（保守半程）**：托管 `index.html` 时下发 `Set-Cookie: oc_token=<随机>; HttpOnly; SameSite=Strict; Path=/`；`_guard` 按「Header → query → Cookie」顺序取令牌。前端 `EventSource` 不再把令牌放进 URL（改由同源 Cookie 自动携带），消除令牌进入访问日志的路径；`server.py` 日志进一步对 `token=` 做脱敏。
+- 本版**保留**页内 `window.__OC_TOKEN` 注入与 `X-OC-Token` 头（`api()` 行为不变），确保零破坏；移除页内令牌留待后续版本。
+- 验证（独立端口 8010，不影响运行中的 8000）：Cookie-only `/api/path` 200、无令牌 403、Header 200、白名单外（`/auth` `/log` `/config` `/tui/...`）404、`/api/event` SSE（Cookie）200。
+- 生效方式：重启 `server.py` 并 **Ctrl+F5**（旧页面无新 Cookie，不刷新会 403）。
 
 ## v0.1.40 变更（安全与可靠性 P0）
 

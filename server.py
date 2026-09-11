@@ -25,6 +25,10 @@ ALLOWED_ORIGINS = {
 }
 SESSION_TOKEN = _secrets.token_urlsafe(32)
 
+PROXY_DRYRUN = os.environ.get("OC_PROXY_DRYRUN", "").strip().lower() in ("1", "true", "yes")
+PROXY_ALLOW_EXACT = {"/config/providers", "/experimental/tool/ids", "/file", "/path", "/agent", "/event"}
+PROXY_ALLOW_PREFIX = ("/session", "/provider", "/question")
+
 
 class DATA_BLOB(ctypes.Structure):
     _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
@@ -158,7 +162,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt, *args):
-        sys.stderr.write("%s - [%s] %s\n" % (self.address_string(), self.command, fmt % args))
+        msg = re.sub(r"token=[^&\s\"']+", "token=***", fmt % args)
+        sys.stderr.write("%s - [%s] %s\n" % (self.address_string(), self.command, msg))
 
     def do_GET(self):
         self._route()
@@ -202,6 +207,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not token:
             qs = urllib.parse.parse_qs(parsed.query)
             token = (qs.get("token") or [""])[0]
+        if not token:
+            cookie = self.headers.get("Cookie") or ""
+            m = re.search(r"(?:^|;\s*)oc_token=([^;]+)", cookie)
+            if m:
+                token = urllib.parse.unquote(m.group(1))
         if token != SESSION_TOKEN:
             self.send_error(403, "invalid token")
             return False
@@ -364,12 +374,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _proxy_allowed(self, path):
+        if path in PROXY_ALLOW_EXACT:
+            return True
+        for p in PROXY_ALLOW_PREFIX:
+            if path == p or path.startswith(p + "/"):
+                return True
+        return False
+
     def _proxy(self, parsed):
         upstream_path = parsed.path
         if upstream_path == "/api":
             upstream_path = "/"
         else:
             upstream_path = upstream_path[len("/api"):]
+        base = upstream_path.split("?", 1)[0]
+        if not self._proxy_allowed(base):
+            sys.stderr.write("[proxy] blocked %s %s\n" % (self.command, base))
+            if not PROXY_DRYRUN:
+                self.send_error(404)
+                return
         if parsed.query:
             upstream_path += "?" + parsed.query
 
@@ -466,6 +490,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 data = inject_preview_backbar(data, rel)
         self.send_response(200)
         self.send_header("Content-Type", ctype + "; charset=utf-8")
+        if ext == ".html" and rel == "index.html":
+            self.send_header("Set-Cookie", "oc_token=%s; HttpOnly; SameSite=Strict; Path=/" % SESSION_TOKEN)
         self.send_header("Content-Length", str(len(data)))
         if ext in (".html", ".js", ".css"):
             self.send_header("Cache-Control", "no-store")
