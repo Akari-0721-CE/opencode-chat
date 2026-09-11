@@ -147,6 +147,30 @@ function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
+function hostingScratchDir() {
+  const home = String(homeDir || "").replace(/[\\/]+$/, "");
+  if (!home) return "";
+  return home + "\\.config\\opencode-chat\\hosting-scratch";
+}
+
+async function ensureHostingScratch() {
+  const dir = hostingScratchDir();
+  if (!dir) throw new Error("无法确定托管临时目录");
+  await ensureWorkspaceDir(dir);
+  return dir;
+}
+
+async function sweepHostingScratch() {
+  const dir = hostingScratchDir();
+  if (!dir) return;
+  try {
+    const list = await api("/session", { directory: dir });
+    for (const s of (Array.isArray(list) ? list : [])) {
+      try { await api("/session/" + s.id, { method: "DELETE", directory: dir }); } catch (e) { /* ignore */ }
+    }
+  } catch (e) { /* ignore */ }
+}
+
 async function waitProxyText(dir, sid, onThink) {
   const t0 = Date.now();
   while (Date.now() - t0 < RP_PROXY_TIMEOUT_MS) {
@@ -173,8 +197,11 @@ async function runProxyStep() {
   if (!currentSession) { showToast("请先选择一个会话", true); return false; }
   const proxy = rpProxyAssistant();
   if (!proxy) { showToast("请先选择托管助手", true); openProxyPop(); return false; }
-  const dir = activeDir;
+  const mainDir = activeDir;
   const mainSid = currentSession.id;
+  let dir;
+  try { dir = await ensureHostingScratch(); }
+  catch (e) { showToast("托管失败：" + e.message, true); return false; }
   const modelLabel = rpProxyModelLabel(proxy);
   rpProxyRunning = true;
   rpProxyCancel = false;
@@ -183,7 +210,7 @@ async function runProxyStep() {
   setProxyStatus("正在生成用户发言…");
   let tempSid = null;
   try {
-    let msgs = await api("/session/" + mainSid + "/message", { directory: dir });
+    let msgs = await api("/session/" + mainSid + "/message", { directory: mainDir });
     const transcript = proxyTranscript(Array.isArray(msgs) ? msgs : []);
     if (!transcript.trim()) { showToast("当前会话还没有可参考的对话", true); return false; }
 

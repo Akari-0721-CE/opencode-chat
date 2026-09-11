@@ -49,6 +49,23 @@ function restoreMath(html, store) {
   return html.replace(/\uE002(\d+)\uE003/g, (m, i) => katexHtml(store[+i] || ""));
 }
 
+const SANITIZE_OPTS = {
+  ADD_TAGS: [
+    "math", "semantics", "annotation", "mrow", "mi", "mn", "mo", "msup", "msub", "msubsup",
+    "mfrac", "msqrt", "mroot", "mstyle", "mtext", "mspace", "munder", "mover", "munderover",
+    "mtable", "mtr", "mtd", "mlabeledtr", "mpadded", "mphantom", "menclose",
+    "mmultiscripts", "mprescripts", "none", "mglyph",
+  ],
+  ADD_ATTR: ["encoding", "display", "mathvariant", "stretchy", "d", "viewBox", "xmlns"],
+};
+
+function sanitizeHtml(html) {
+  if (window.DOMPurify && typeof window.DOMPurify.sanitize === "function") {
+    return window.DOMPurify.sanitize(html, SANITIZE_OPTS);
+  }
+  return null;
+}
+
 function renderMarkdown(el, text) {
   const src0 = text == null ? "" : String(text);
   const codeStore = [];
@@ -60,7 +77,10 @@ function renderMarkdown(el, text) {
     try {
       const out = window.marked.parse(src);
       const finish = (html) => {
-        el.innerHTML = restoreMath(restoreCode(html, codeStore), mathStore);
+        const rebuilt = restoreMath(restoreCode(html, codeStore), mathStore);
+        const clean = sanitizeHtml(rebuilt);
+        if (clean === null) { el.textContent = src0; return; }
+        el.innerHTML = clean;
         if (window.hljs) {
           el.querySelectorAll("pre code").forEach(b => { try { hljs.highlightElement(b); } catch (e) {} });
         }

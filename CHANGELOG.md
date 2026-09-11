@@ -1,8 +1,17 @@
 # opencode 自建前端 · 版本说明
 
-- 版本：v0.1.39
+- 版本：v0.1.40
 - 日期：2026-09-12
 - 组成：Python 代理 + 多文件前端 + opencode 插件
+
+## v0.1.40 变更（安全与可靠性 P0）
+
+- **Markdown 渲染净化（XSS → RCE 链路切断）**：引入本地 `static/vendor/purify.min.js`（DOMPurify 3.1.6），`renderMarkdown` 在写入 `innerHTML` 前统一经 `DOMPurify.sanitize`（放行 KaTeX MathML 所需标签/属性）；DOMPurify 缺失时回退为纯文本，不再注入未净化 HTML。此前恶意 Markdown（如 `<img onerror>`）可窃取页内 `window.__OC_TOKEN` 进而调用 opencode API 执行命令。
+- **托管临时会话隔离与清扫**：托管生成不再把临时会话建在助手工作区，而是建在专用目录 `~/.config/opencode-chat/hosting-scratch`；`boot()` 启动时清空该目录全部会话。修复「生成中断/关闭页面后临时会话残留，出现在会话列表与用量统计」的问题。
+- **静态目录穿越加固**：`server.py` 静态托管路径判断由 `startswith(STATIC_DIR)` 改为「分隔符 + 大小写归一」比较，修复同级 `static*` 目录潜在绕过。
+- **托管并发守卫**：`regenerate()` 与 `editUserMessage()` 新增 `rpProxyRunning` 守卫，避免托管生成期间误触删除/重发造成消息竞争。
+- **快照预检**：`rollback.bat backup` 在创建快照前自动运行 `node --check`（全部 `static/js/*.js`）与 `py_compile`（`server.py`），任一失败即中止快照（`list`/`rollback` 不受影响）。已实测通过/失败两条路径。
+- 生效方式：重启 `server.py` 并 **Ctrl+F5**（`server.py` 与前端均已改动；opencode 插件与本体无需重启）。
 
 ## v0.1.39 变更
 
@@ -271,6 +280,7 @@ http://127.0.0.1:8000
 | `server.py` | 本地代理：`/api/*` 转发到 opencode；静态托管 `static/`（含 `.ico/.svg/.png/.webmanifest` MIME）；`/api/_models` 模型列表；`/api/_mkdir` 创建目录；给非 `index.html` 的 `.html` 注入「返回应用」浮层 |
 | `static/index.html` | 前端 HTML 骨架（外部引入 `/css/app.css` 与 `/js/*.js`），连接代理 |
 | `static/css/app.css` | 全部样式（由原单文件 `<style>` 拆出） |
+| `static/vendor/purify.min.js` | 本地 DOMPurify 3.1.6（Markdown 渲染 HTML 净化，防 XSS） |
 | `static/js/*.js` | 全部前端脚本（15 个经典脚本，按 `core`→…→`boot` 顺序加载；含 `proxy.js` 对话托管） |
 | `static/icon.svg` / `favicon.ico` / `favicon-16|32.png` / `icon-48/64/128/192/256/512.png` / `apple-touch-icon.png` / `manifest.webmanifest` | 五层渐变回字形层叠应用图标（`#0e8262`→`#16e0b0`）与 PWA 清单 |
 | `opencode-chat.exe` | .NET 启动器：检测 8000 端口，必要时 `python server.py`，再用 Edge `--app` 打开页面 |
@@ -401,6 +411,11 @@ http://127.0.0.1:8000
 10. 多段模型 ID 被截断 —— 模型下拉以 `providerID + "/" + id` 作值并用 `split("/")` 解析，含 `/` 的 ID（SiliconFlow / 聚合站常见）只取到第一段，报 `Model not found`；改用 JSON 编码的 `modelKey` / `parseModelKey`（v0.1.20）。
 11. 模型报错静默 —— 助手消息的 `info.error` 未渲染，请求 401/403 时聊天区无任何反馈；现以红色错误气泡显示（v0.1.21）。
 12. 账号专属模型选不到 —— opencode 的模型来自 models.dev，与聚合站/账号实际模型不一致（SiliconFlow `moonshotai/Kimi-K2.6` 报 403，账号真实 ID 为 `Pro/moonshotai/Kimi-K2.6`）；新增每服务商「自定义模型 ID」并注入 `config.provider[id].models`（v0.1.22）。
+
+13. Markdown XSS（可升级为 RCE）—— `renderMarkdown` 把 marked 输出直接写入 `innerHTML` 未净化，恶意 HTML（如 `<img onerror>`）可窃取页内 `window.__OC_TOKEN` 进而调用 opencode API；现引入本地 DOMPurify 净化、缺失则回退纯文本（v0.1.40）。
+14. 托管临时会话残留 —— 生成中断/关页后临时会话留在助手工作区，出现在会话列表与用量统计；现改建于专用目录并在启动时清空（v0.1.40）。
+15. 静态路径前缀绕过 —— `server.py` 以 `startswith(STATIC_DIR)` 判断，存在同级 `static*` 目录时可越权读取；现改为分隔符 + 大小写归一比较（v0.1.40）。
+16. 托管期间编辑/重生成竞争 —— 托管生成时 `busy` 仍为假，`regenerate`/`editUserMessage` 未守卫，可能删除消息与托管结果竞争；现加 `rpProxyRunning` 守卫（v0.1.40）。
 
 ## 注意事项
 

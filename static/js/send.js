@@ -69,6 +69,7 @@ async function send() {
 
 async function regenerate(assistantId) {
   if (!currentSession || busy) return;
+  if (typeof rpProxyRunning !== "undefined" && rpProxyRunning) { showToast("托管进行中，请稍候", true); return; }
   const sid = currentSession.id;
   let msgs;
   try {
@@ -154,6 +155,7 @@ function setupVersionNav(holder, userText) {
 }
 async function editUserMessage(msgId) {
   if (!currentSession || busy) return;
+  if (typeof rpProxyRunning !== "undefined" && rpProxyRunning) { showToast("托管进行中，请稍候", true); return; }
   const sid = currentSession.id;
   const entry = msgEls[msgId];
   const text = entry ? messageRawText(entry.el) : "";

@@ -7,6 +7,8 @@ async function boot() {
   try { pathInfo = await api("/path", { noDir: true }); } catch (e) {}
   if (pathInfo) homeDir = pathInfo.home || pathInfo.directory || "";
 
+  try { if (typeof sweepHostingScratch === "function") await sweepHostingScratch(); } catch (e) {}
+
   if (!S.assistants.length) {
     const dir = pathInfo ? (pathInfo.directory || pathInfo.home || "") : "";
     S.assistants.push({

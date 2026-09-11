@@ -441,7 +441,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             path = "/index.html"
         rel = path.lstrip("/")
         filepath = os.path.normpath(os.path.join(STATIC_DIR, rel))
-        if not filepath.startswith(STATIC_DIR) or not os.path.isfile(filepath):
+        root = os.path.normcase(STATIC_DIR)
+        candidate = os.path.normcase(filepath)
+        if not (candidate == root or candidate.startswith(root + os.sep)) or not os.path.isfile(filepath):
             self.send_error(404)
             return
         ext = os.path.splitext(filepath)[1].lower()

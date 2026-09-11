@@ -44,6 +44,8 @@ goto :end
 :backup
 set "LABEL=%~2"
 if "%LABEL%"=="" set "LABEL=stable"
+call :preflight
+if errorlevel 1 goto :end
 call :mksnap "%LABEL%"
 echo [OK] Snapshot created: !DEST!
 goto :end
@@ -102,6 +104,38 @@ echo.
 echo [OK] Restored: %SNAP%
 echo Next: 1^) restart server.py  2^) restart opencode  3^) refresh app ^(Ctrl+F5^)
 goto :end
+
+
+:preflight
+set "PF_OK=1"
+where node >nul 2>&1
+if errorlevel 1 (
+  echo [PREFLIGHT] node not found - skip JS check
+) else (
+  for %%f in ("%ROOT%\static\js\*.js") do (
+    node --check "%%f" >nul 2>&1
+    if errorlevel 1 (
+      echo [PREFLIGHT FAIL] JS syntax: %%f
+      set "PF_OK=0"
+    )
+  )
+)
+where python >nul 2>&1
+if errorlevel 1 (
+  echo [PREFLIGHT] python not found - skip server.py check
+) else (
+  python -c "import py_compile; py_compile.compile(r'%ROOT%\server.py', doraise=True)" >nul 2>&1
+  if errorlevel 1 (
+    echo [PREFLIGHT FAIL] server.py compile
+    set "PF_OK=0"
+  )
+)
+if not "!PF_OK!"=="1" (
+  echo [ERROR] Preflight failed. Snapshot aborted.
+  exit /b 1
+)
+echo [PREFLIGHT] OK
+exit /b 0
 
 
 :mksnap
