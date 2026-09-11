@@ -1,8 +1,30 @@
 # opencode 自建前端 · 版本说明
 
-- 版本：v0.1.36
+- 版本：v0.1.39
 - 日期：2026-09-12
 - 组成：Python 代理 + 多文件前端 + opencode 插件
+
+## v0.1.39 变更
+
+- **「RP 代打」正式更名为「对话托管」**：输入栏魔棒按钮、弹层标题、选项与提示文案统一为「对话托管 / 托管一步 / 自动托管 / 托管助手」（内部标识 `oc_rp_proxy`、`proxy.js` 不变）。
+- 托管时**贴出托管模型的思考内容**：若托管模型产生推理（reasoning）内容，聊天区底部显示「托管思考 · <模型名>」块（可点 `×` 收起），随生成实时刷新、完成后定格；无推理则不显示。该块为临时展示——切换会话/助手或下一次托管时清除，刷新页面后不保留。
+- 输入栏新增**托管动效**：托管运行（手动或自动）时输入栏顶部有青色流光扫过并轻微呼吸、魔棒按钮高亮，与普通发送区分；系统开启「减少动态效果」时静止。
+- 托管流程不变（临时会话生成、不污染主会话、自动轮数上限 20）。
+
+## v0.1.38 变更
+
+- 助手管理新增 **复制助手**：助手树每行操作区增加「复制」按钮，一键复制该助手的全部配置（名称、图标、头像、文件夹、Agent、模型、思考强度、温度/topP、系统提示词、顶掉基底 / 纯净输入 / Git 安全开关、工具开关），**不附带任何对话**。
+- 副本自动命名 `原名（1）`、`原名（2）`…（复制副本时先去掉已有数字后缀再递增，避免出现 `（1）（1）`）；在 `%USERPROFILE%\opencode-workspaces\<副本名>` 新建独立工作区目录，因此会话列表为空；复制不切换当前助手，只提示结果。
+- 纯前端，刷新页面（Ctrl+F5）即可。
+
+## v0.1.37 变更
+
+- 新增 **对话托管**（初版名为「RP 代打」，v0.1.39 更名）：用指定助手代替「用户」一方生成下一条发言，并作为你的消息发回当前会话（可手动「托管一步」，也可「自动托管 N 轮」，N 上限 20）。
+- 交互：输入栏「魔棒」按钮打开托管弹层，选择托管助手（存 `localStorage` 键 `oc_rp_proxy`，全局记忆）；「托管一步」生成一次，「自动托管」按轮数循环，运行中按钮变为「停止」可随时取消。
+- 实现（纯前端 + 现有 API，不改 `server.py` 与插件）：把当前会话最近 40 条消息转录进**临时会话**（`POST /session` → `prompt_async` → 轮询 `/session/{id}/message` 直到 `time.completed` → `DELETE /session/{id}`），由托管助手的模型 + 系统提示词生成用户下一句；托管请求禁用全部工具、并以 `[[OC_BASE_OVERRIDE]]` 顶掉 opencode 基底，保证纯角色扮演输出。
+- 托管生成走临时会话，不污染当前会话记录；生成结果通过 `postPrompt` 作为普通用户消息发出，因此现有发送/重生成/编辑流程不受影响。
+- 自动模式在 `session.idle` 后驱动下一轮；切换助手/会话、手动发送、编辑或重新生成都会停止自动托管。
+- 生效方式：刷新页面（Ctrl+F5）即可；opencode 插件与本体无需重启。
 
 ## v0.1.36 变更
 
@@ -249,7 +271,7 @@ http://127.0.0.1:8000
 | `server.py` | 本地代理：`/api/*` 转发到 opencode；静态托管 `static/`（含 `.ico/.svg/.png/.webmanifest` MIME）；`/api/_models` 模型列表；`/api/_mkdir` 创建目录；给非 `index.html` 的 `.html` 注入「返回应用」浮层 |
 | `static/index.html` | 前端 HTML 骨架（外部引入 `/css/app.css` 与 `/js/*.js`），连接代理 |
 | `static/css/app.css` | 全部样式（由原单文件 `<style>` 拆出） |
-| `static/js/*.js` | 全部前端脚本（14 个经典脚本，按 `core`→…→`boot` 顺序加载） |
+| `static/js/*.js` | 全部前端脚本（15 个经典脚本，按 `core`→…→`boot` 顺序加载；含 `proxy.js` 对话托管） |
 | `static/icon.svg` / `favicon.ico` / `favicon-16|32.png` / `icon-48/64/128/192/256/512.png` / `apple-touch-icon.png` / `manifest.webmanifest` | 五层渐变回字形层叠应用图标（`#0e8262`→`#16e0b0`）与 PWA 清单 |
 | `opencode-chat.exe` | .NET 启动器：检测 8000 端口，必要时 `python server.py`，再用 Edge `--app` 打开页面 |
 | `~/.config/opencode/plugin/base-override.ts` | 按请求标记"顶掉 opencode 基底提示词"；解析 `[[OC_PARAMS]]` 标记覆盖 `temperature` / `topP`；`tool.execute.before` 按会话给 bash 注入默认超时（`bashTimeout`） |
@@ -269,8 +291,16 @@ http://127.0.0.1:8000
 - 回复用时计时器：回复中顶栏与消息底部实时计时，完成后显示最终用时
 - 回到底部悬浮按钮
 
+### 对话托管
+- 指定助手代替「用户」生成下一条发言，作为你的消息发回当前会话
+- 手动「托管一步」或「自动托管 N 轮」（N ≤ 20，运行中可停止）
+- 托管模型有推理内容时，聊天区贴出可收起的「托管思考」块
+- 运行中输入栏流光 + 呼吸动效，与普通发送区分
+- 生成走临时会话，不污染当前对话；托管助手全局记忆
+
 ### 助手系统
 - 助手 / 文件夹树，支持新建、编辑、删除、归类
+- 复制助手：一键复制配置（不含对话），副本自动命名 `（1）` 并新建独立工作区
 - 每个助手独立工作区目录
 - 新建助手默认自动创建 `%USERPROFILE%\opencode-workspaces\<助手名>` 文件夹（名称清洗、重名加 `-2`）
 - 应用内目录浏览器，也可手动指定工作区
@@ -354,6 +384,8 @@ http://127.0.0.1:8000
 - **草稿**：`oc_drafts`（`{sessionId: text}`）按会话保存输入框内容；`saveDraft/loadDraft/dropDraft`，输入 300ms 防抖、切换会话/助手前落盘、发送与删除会话时清除；在 `selectSession` 载入草稿。
 - **版本回滚**：工作区 `rollback.bat` 以时间戳快照 4 个关键文件；`backup` 建快照、无参/`rollback` 回滚到最新快照（回滚前先生成 `pre-rollback-*` 安全快照）、`list` 列出、`<名称>` 指定回滚。批处理须 CRLF 行尾，回滚前用 `dir /b /ad /o-d` 取最新快照并排除 `pre-rollback-*`。
 - **编辑消息 / 版本快照**：编辑用户消息 = 从该消息到末尾**倒序逐条** `DELETE /session/{id}/message/{messageID}` 后 `prompt_async` 重发；回复版本存 `oc_replies`（`turnKey = sessionId + "|" + djb2(用户正文)`），`setupVersionNav` 在助手消息底部加 `◀ 版本 n/N ▶`，历史版以 `.bubble.ver-old` + `.show-ver-old` CSS 覆盖显示，`messageRawText` 对 `show-ver-old` 只读旧版气泡。`session.idle` 时 `setupAllVersionNavs()` 刷新。
+
+- **对话托管**：入口为输入栏 `#proxyBtn` 与弹层 `#proxyPop`（选择托管助手存 `oc_rp_proxy`）。`runProxyStep` 读当前会话最近 40 条文本转录，在同目录 `POST /session` 建临时会话，`prompt_async` 携带托管助手 `model`/`agent`/`variant`、禁用全部工具（`tools:{id:false}`）、system = `[[OC_BASE_OVERRIDE]]` + 托管助手系统 + 托管指令 + `[[OC_PARAMS]]`，轮询 `GET /session/{temp}/message` 取 `time.completed` 的助手文本，随后 `DELETE /session/{temp}`，再用 `postPrompt` 把文本作为用户消息发回主会话。轮询时同步读取助手消息的 `reasoning` 部件，经 `setHostingNote` 实时渲染为聊天区底部的「托管思考」块（`#hostingNote`，无推理不显示，切换会话/助手或下次托管时 `clearHostingNote`）。`updateProxyUI` 在运行时给 `.input-wrap` 加 `.hosting` 类，驱动顶部流光线（`hostingSweep`）与呼吸（`hostingPulse`）。自动模式由 `session.idle` 触发 `maybeAutoProxyNext` 续轮，`rpProxyRemaining` 计剩余轮数；切换助手/会话或手动发送/编辑/重生成即停止。
 
 ## 已修复问题
 

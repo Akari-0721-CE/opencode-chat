@@ -47,6 +47,7 @@ async function postPrompt(parts) {
 }
 
 async function send() {
+  if (typeof rpProxyRunning !== "undefined" && rpProxyRunning) return;
   const text = input.value.trim();
   if ((!text && !attachments.length) || !currentSession || busy) return;
   for (const at of attachments) {

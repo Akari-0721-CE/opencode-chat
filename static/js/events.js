@@ -52,6 +52,7 @@ function handleEvent(evt) {
       setBusy(false);
       finalizeMarkdown();
       setupAllVersionNavs();
+      if (typeof maybeAutoProxyNext === "function") maybeAutoProxyNext();
       break;
     }
     case "question.replied":
@@ -333,6 +334,7 @@ function setBusy(b) {
   sendBtn.disabled = b || !currentSession;
   stopBtn.disabled = !b;
   if (typeof updateSendState === "function") updateSendState();
+  if (typeof updateProxyUI === "function") updateProxyUI();
   document.querySelectorAll(".regen-btn").forEach(x => { x.disabled = b; });
   document.querySelectorAll(".live-dot").forEach(d => d.classList.toggle("busy", !!b));
   document.querySelectorAll(".cursor").forEach(c => c.remove());

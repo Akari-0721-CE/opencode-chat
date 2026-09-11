@@ -88,6 +88,9 @@
         <button class="icon-btn attach" id="attachBtn" title="添加图片或文件" disabled>
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
         </button>
+        <button class="icon-btn proxy" id="proxyBtn" title="对话托管">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="21" x2="14" y2="10"/><path d="M15 3.5l1.1 2.2 2.2 1.1-2.2 1.1L15 10.1l-1.1-2.2-2.2-1.1 2.2-1.1z"/></svg>
+        </button>
         <textarea id="input" placeholder="输入消息…（可拖入/粘贴图片或文件）" disabled></textarea>
         <button class="icon-btn stop" id="stop" disabled title="停止">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
@@ -95,6 +98,22 @@
         <button class="icon-btn send" id="send" disabled title="发送">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
         </button>
+      </div>
+      <div class="proxy-pop" id="proxyPop" hidden>
+        <div class="pp-title">对话托管</div>
+        <div class="pp-row">
+          <label>托管助手</label>
+          <select id="proxyAsst"></select>
+        </div>
+        <div class="pp-hint">用该助手代替「你」生成下一条发言，再作为你的消息发出（其思考过程会一并贴出）。</div>
+        <div class="pp-actions">
+          <button type="button" class="btn-allow" id="proxyOne">托管一步</button>
+          <span class="pp-auto">
+            <input type="number" id="proxyTurns" min="1" max="20" value="3" title="自动托管轮数">
+            <button type="button" class="btn-always" id="proxyAuto">自动托管</button>
+          </span>
+        </div>
+        <div class="pp-status" id="proxyStatus"></div>
       </div>
       <input type="file" id="fileInput" multiple hidden>
     </div>
@@ -519,6 +538,7 @@
 <script src="/js/events.js"></script>
 <script src="/js/attachments.js"></script>
 <script src="/js/send.js"></script>
+<script src="/js/proxy.js"></script>
 <script src="/js/settings.js"></script>
 <script src="/js/media.js"></script>
 <script src="/js/providers.js"></script>

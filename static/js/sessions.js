@@ -1,5 +1,7 @@
 /* ============ 激活助手 / 会话 ============ */
 function resetMain() {
+  if (typeof stopProxyAuto === "function") stopProxyAuto();
+  if (typeof clearHostingNote === "function") clearHostingNote();
   activeDir = null;
   currentSession = null;
   sessionsCache = [];
@@ -11,6 +13,7 @@ function resetMain() {
   clearAttachments();
   closeEvents();
   input.disabled = true; sendBtn.disabled = true; stopBtn.disabled = true; attachBtn.disabled = true;
+  if (typeof updateProxyUI === "function") updateProxyUI();
 }
 
 function refreshAssistantChrome() {
@@ -32,6 +35,8 @@ function refreshAssistantChrome() {
 async function activateAssistant(id, opts = {}) {
   const a = S.assistants.find(x => x.id === id);
   if (!a) return;
+  if (typeof stopProxyAuto === "function") stopProxyAuto();
+  if (typeof clearHostingNote === "function") clearHostingNote();
   S.activeId = id;
   activeDir = a.directory;
   connectEvents();
@@ -104,6 +109,8 @@ function renderSessions(list, hintText) {
 }
 
 async function selectSession(id) {
+  if (typeof stopProxyAuto === "function") stopProxyAuto();
+  if (typeof clearHostingNote === "function") clearHostingNote();
   if (currentSession && currentSession.id !== id) saveDraft(currentSession.id, input.value);
   currentSession = { id, directory: activeDir };
   S.last[S.activeId] = id;
@@ -118,6 +125,7 @@ async function selectSession(id) {
   sendBtn.disabled = busy;
   input.value = loadDraft(id);
   updateSendState();
+  if (typeof updateProxyUI === "function") updateProxyUI();
   try {
     const msgs = await api("/session/" + id + "/message", { directory: activeDir });
     for (const m of msgs) renderMessage(m.info, m.parts);

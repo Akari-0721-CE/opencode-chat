@@ -34,9 +34,11 @@ function renderTree() {
     bFav.onclick = (e) => { e.stopPropagation(); a.favorite = !a.favorite; saveStore(); renderTree(); };
     const bEdit = el("button", "mini-btn"); bEdit.title = "编辑"; bEdit.appendChild(iconEl("pencil"));
     bEdit.onclick = (e) => { e.stopPropagation(); openAssistantModal(a.id); };
+    const bCopy = el("button", "mini-btn"); bCopy.title = "复制助手（不含对话）"; bCopy.appendChild(iconEl("copy"));
+    bCopy.onclick = (e) => { e.stopPropagation(); duplicateAssistant(a.id); };
     const bDel = el("button", "mini-btn"); bDel.title = "删除"; bDel.appendChild(iconEl("trash"));
     bDel.onclick = (e) => { e.stopPropagation(); deleteAssistant(a.id); };
-    actions.append(bFav, bEdit, bDel);
+    actions.append(bFav, bEdit, bCopy, bDel);
     row.appendChild(actions);
 
     row.onclick = () => activateAssistant(a.id, { restore: true });
@@ -393,5 +395,50 @@ function deleteAssistant(id) {
   renderTree();
   if (S.activeId) activateAssistant(S.activeId, { restore: true });
   else resetMain();
+}
+
+function uniqueAssistantName(base) {
+  const root = String(base || "助手").replace(/[（(]\d+[）)]$/, "").trim() || "助手";
+  const used = new Set(S.assistants.map(a => a.name));
+  let i = 1;
+  while (used.has(root + "（" + i + "）")) i++;
+  return root + "（" + i + "）";
+}
+
+async function duplicateAssistant(id) {
+  const src = S.assistants.find(x => x.id === id);
+  if (!src) return;
+  const name = uniqueAssistantName(src.name);
+  const directory = uniqueWorkspace(name);
+  if (!directory) { alert("无法生成新的工作区目录"); return; }
+  try {
+    await ensureWorkspaceDir(directory);
+  } catch (e) {
+    alert("创建工作区失败：" + e.message);
+    return;
+  }
+  const copy = {
+    id: uid("ast"),
+    name,
+    icon: src.icon || "",
+    avatar: src.avatar || "",
+    folderId: src.folderId || null,
+    directory,
+    agent: src.agent || "build",
+    model: src.model ? { providerID: src.model.providerID, id: src.model.id } : null,
+    variant: src.variant || null,
+    temperature: typeof src.temperature === "number" ? src.temperature : null,
+    topP: typeof src.topP === "number" ? src.topP : null,
+    system: src.system || "",
+    overrideBase: !!src.overrideBase,
+    pureInput: !!src.pureInput,
+    gitSafe: !!src.gitSafe,
+    disabledTools: Array.isArray(src.disabledTools) ? src.disabledTools.slice() : [],
+    favorite: false,
+  };
+  S.assistants.push(copy);
+  saveStore();
+  renderTree();
+  showToast("已复制为「" + name + "」");
 }
 
