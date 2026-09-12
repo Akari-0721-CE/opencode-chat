@@ -13,11 +13,11 @@
 - **版本管理（v0.2.0）**：定 `0.2.0` 为发布候选。`rollback.bat` 快照已扩展至 `release/`（launcher/build/uninstall）与根 `README.md`；`VERSION` / `CHANGELOG.md` / 快照 / exe 盖章统一由发版流程维护。**根 `TODO*.md` 仍不在快照内**（有意：避免回滚覆盖交接笔记）。
 - **卸载 / 升级（v0.1.75）**：产物根目录 `uninstall.bat`+`uninstall.ps1`（源在 `release/`）；交互确认删程序目录 / 可选删 `~/.config/opencode-chat`，**不卸载系统全局 opencode/Node**，插件不删并提示路径。`launcher.py` 启动时若端口被本程序旧进程占用则结束升级；组件/插件一致时不重复安装（`_copy_if_changed`）；v0.1.75 起 `rollback.bat` 已纳入 `release/`。
 - **多语言（v0.1.73/0.1.74）**：`js/i18n.js`（中文为 key，`t()` 查英文回退、`tf()` 带参整句；`translateDom()` 精确匹配文本/属性；`MutationObserver` 自动翻译动态 chrome，**跳过用户内容与代码块**并防自触发循环）。设置与首启向导可切换中文/English，默认按系统语言；存 `oc_lang`。英文词表已覆盖各模块动态文案（会话/回收站/消息/用量/服务商/助手/OCR/翻译/托管/附件/备份/权限/搜索/收藏），拼接串用 `tf`，会话时间/分组在渲染层 `t()`。**残留**：少数超长拼接句与跟随语气的中文系统提示词（OCR/翻译/托管 prompt）仍为中文，可按需增补。
-- **维护角色**：负责维护本软件本体。**本地开发不使用 git**（未要求不要用 git）；不改无关文件。
+- **维护角色**：负责维护本软件本体。**已启用 git**（分支 `master`，无 remote、不 push）；版本以 `VERSION` + `CHANGELOG.md` + tag 管理；不改无关文件。
 - **当前运行态**：`server.py` 在 v0.1.78 变更（新增 `/_opencode/restart`），**需重启前端一次**；更早 v0.1.70/0.1.71 也改过。纯前端改动 **Ctrl+F5** 即生效。插件改动才需重启 opencode（服务商弹窗已内置重启按钮）。
 - **发布工程（v0.1.71+）**：便携 ZIP + 内置便携 Python。源码 `release/launcher.cs`、`release/launcher.py`、`release/build.ps1`；产物 `dist/`（gitignore）。打包：`powershell -File release\build.ps1`（含**安全审计**：产物不得含本机用户名/绝对路径/敏感文件，不通过即中止）。详见 `TODO-RELEASE.md`（决策已定：内置 Python / 首启自动装 opencode / 便携 ZIP / 新启动器 / 插件走 `plugins/` 自动加载；R5 首启向导与内置默认助手已完成）。
 - **验证（发版前必跑）**：改 JS 先 `node --check static\js\*.js`；`tools\test.bat` = 前端 `node --test` **45** 项 + server `unittest` **8** 项（当前全绿）。
-- **发版流程**：改代码 → 同步 `VERSION` + `CHANGELOG.md` + `TODO-UX.md`/`TODO.md` → `.\rollback.bat backup vX.Y.Z`（先跑 `node --check` + `py_compile` 预检；快照含 `server.py`/`static/`/`VERSION`/`CHANGELOG.md`/`plugin`）。改代码后**必须重新快照**（本会话曾出现快照后又改动的情况）。
+- **发版流程**：改代码 → 同步 `VERSION` + `CHANGELOG.md` + `TODO*.md` → `.\rollback.bat backup vX.Y.Z`（先跑 `node --check` + `py_compile` 预检；快照含 `server.py`/`static/`/`VERSION`/`CHANGELOG.md`/插件/`release/`/`README.md`）→ `git add -A` + `git commit` + `git tag -a vX.Y.Z` → `build.ps1` 出包。改代码后**必须重新快照**。
 - **最近版本**：0.1.54 跟随系统主题 · 0.1.55 桌面通知 · 0.1.56 数据落盘+按助手清理(含server) · 0.1.57 快捷键/触屏 · 0.1.58 模型搜索折叠 · 0.1.59 多图裁剪批量 · 0.1.60 消息翻译 · 0.1.61 会话列表增强 · 0.1.62 弹窗层级修复+清空回收站 · 0.1.63 OCR 支持 · 0.1.64 自动 OCR 图片拒收修复 · 0.1.65 自动 OCR 进度提示与动效 · 0.1.66 设置内搜索 · 0.1.67 低性能模式 · 0.1.68 工具说明/新手易用性 · 0.1.69 助手弹窗排版整齐化 · 0.1.70 渲染质量滑块+背景升级+高质量动效(含server CSP) · 0.1.71 发布工程骨架(便携打包+新启动器+`/_version`) · 0.1.72 首启向导+内置默认助手+打包安全审计 · 0.1.73 多语言(中/英) · 0.1.74 英文词表补齐+动态自动翻译 · 0.1.75 卸载脚本+安全升级 · 0.1.76 无 Node 自动获取 opencode（npm 源二进制+校验） · 0.1.77 端口占用自动回退修复 404 · 0.1.78 修复连接服务商后模型不显示（自动重启 opencode） · 0.1.79 首次下载 opencode 可见进度条 · 0.2.0 首个对外发布候选（版本管理：快照纳入 `release/`+`README.md`）。
 - **OCR 实现要点（0.1.63+，改前必读）**：`js/ocr.js` 经**临时会话**（`~/.config/opencode-chat/ocr-scratch`，用完即删）调模型；设置存 `oc_ocr_model`/`oc_ocr_prompt`/`oc_ocr_variant`（**仅手动指定**，界面优先推荐名称含「OCR」的专用模型）；批量面板收集「附件 + 当前会话图片」；助手配置 `a.autoOcr` 开关，发送时把图片 OCR 成文本 part（格式 `【图片 OCR：文件名】\n…`）发给模型、**不传图片**；被替换的图片以「OCR 文本 hash」为键存 **IndexedDB `oc_ocr_images`**，用户消息渲染时注入气泡显示（刷新仍在）；`send()` 的自动 OCR 分支 + `#ocrProgress` 进度动效；图片能力校验对开启自动 OCR 的助手放行。
 - **待人工测试**：多语言（设置/向导切换中英、英文下各弹窗与 toast、切换后动态刷新、老用户不弹向导）；OCR 全链路；会话列表时间/分组/跨助手搜索/最近删除；翻译、多图裁剪、桌面通知、跟随系统主题、渲染质量三档、背景（图片/视频/动态预设）。
@@ -132,7 +132,7 @@
 - 生效方式：改 `server.py` 需重启并 Ctrl+F5；纯前端改 Ctrl+F5 即可。插件改动需重启 opencode。
 
 ## 回滚参考
-- 整体回滚到某稳定版：`.\rollback.bat v0.1.74-20260912-181127`（或 `backups/` 下任一快照名；默认取最新快照）；若跨 `server.py` 改动，回滚后需重启 `server.py` + Ctrl+F5。
+- 整体回滚到某稳定版：`.\rollback.bat v0.2.0-20260912-195113`（或 `backups/` 下任一快照名；默认取最新快照）；若跨 `server.py` 改动，回滚后需重启 `server.py` + Ctrl+F5。快照含 `server.py`/`static`/`VERSION`/`CHANGELOG.md`/插件/`release/`/`README.md`。
 - 回滚为交互式：会要求确认，并自动生成 `pre-rollback-*` 安全快照；`rollback.bat list` 可列快照。
 - 快照前预检：`rollback.bat backup <label>` 会先跑 `node --check` + `py_compile`，失败即中止。
-- git 侧：`v0.1.36` / `v0.1.39` / `v0.1.40` / `v0.1.41` 有 tag；仅本地，无 remote、不 push。工作区仍有大量未提交改动（含 0.1.42–0.1.65 全部版本），按约定不提交。
+- git 侧：tag `v0.1.36` / `v0.1.39` / `v0.1.40` / `v0.1.41` / `v0.2.0`；**仅本地，无 remote、不 push**。v0.1.42–v0.2.0 已合并为提交 `07fd933` 并打 `v0.2.0`（annotated），工作树干净。后续发版：`git add -A` → `git commit` → `git tag -a vX.Y.Z`。
