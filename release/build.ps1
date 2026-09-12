@@ -27,6 +27,12 @@ Copy-Item (Join-Path $Root "plugin") (Join-Path $Pkg "app\plugin") -Recurse -For
 if (Test-Path (Join-Path $Root "README.md")) {
   Copy-Item (Join-Path $Root "README.md") (Join-Path $Pkg "README.md") -Force
 }
+if (Test-Path (Join-Path $Root "LICENSE")) {
+  Copy-Item (Join-Path $Root "LICENSE") (Join-Path $Pkg "LICENSE") -Force
+}
+if (Test-Path (Join-Path $Root "THIRD-PARTY-NOTICES.md")) {
+  Copy-Item (Join-Path $Root "THIRD-PARTY-NOTICES.md") (Join-Path $Pkg "THIRD-PARTY-NOTICES.md") -Force
+}
 Copy-Item (Join-Path $ReleaseDir "uninstall.bat") (Join-Path $Pkg "uninstall.bat") -Force
 Copy-Item (Join-Path $ReleaseDir "uninstall.ps1") (Join-Path $Pkg "uninstall.ps1") -Force
 

@@ -4,6 +4,21 @@
 - 日期：2026-09-12
 - 组成：Python 代理 + 多文件前端 + opencode 插件 + 发布工程
 
+## 未发布（修复：杀软 HTTPS 扫描导致模型调用证书错误）
+
+- **问题**：Kaspersky 等杀毒软件的「HTTPS 扫描」会用其根证书做中间人重签。Windows 信任该根证书，但 opencode 使用的 Node/Bun 运行时只信任自带 CA 库，导致模型调用报 `unknown certificate verification error`（个别请求表现为 `fetch failed`）。
+- **修复**：`release/launcher.py` 新增 `ensure_extra_ca_certs()`，启动时把 Windows 受信任根证书（ROOT/CA）导出为 `~/.config/opencode-chat/node-extra-ca.pem` 并设置 `NODE_EXTRA_CA_CERTS`；`server.py` 的「重启 opencode」也通过 `node_tls_env()` 注入同一变量，覆盖自动重启路径。
+- **验证**：导出后 Node `fetch('https://api.deepseek.com')` 由证书错误变为成功（返回 401）；opencode 二进制内含 `NODE_EXTRA_CA_CERTS`/`SSL_CERT_FILE` 处理，证实其 Bun 运行时支持。
+- 生效方式：需重启本程序（确保旧 `opencode.exe` 已结束）；发布工程改动需重新打包。
+
+## 未发布（开源与发布准备）
+
+- **开源许可**：新增根目录 `LICENSE`（MIT）；`README` 增加「声明」（个人自用练习项目、非官方、与上游无关联）与「开源许可与第三方声明」章节。
+- **第三方声明**：新增 `THIRD-PARTY-NOTICES.md`，列明分发的第三方组件（marked / DOMPurify / KaTeX / highlight.js）及运行时获取的组件（opencode / 便携 Python）与构建期工具（rcedit）的许可。
+- **安全约定**：新增 `SECURITY.md`；新增 `.gitattributes` 统一换行；`.gitignore` 补全密钥 / 临时 / 编辑器忽略项。
+- **发布打包**：`release/build.ps1` 将 `LICENSE` 与 `THIRD-PARTY-NOTICES.md` 一并复制进发布包，确保分发合规。
+- **敏感数据核查**：确认 git 历史与跟踪文件不含密钥、令牌或本机敏感路径；`app-profile/` 等本机数据均在忽略之列。
+
 ## v0.2.0 变更（首个对外候选版本）
 
 - **里程碑**：将验收通过的 `v0.1.79` 定为 **`v0.2.0` 发布候选（对外便携版）**；功能代码与 0.1.79 相同（仅新增下方版本管理改进）。

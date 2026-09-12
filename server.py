@@ -255,6 +255,21 @@ def pid_image_name(pid):
     return ""
 
 
+def node_tls_env():
+    """为 opencode（Node/Bun）补齐系统根证书，兼容杀软 HTTPS 扫描。
+
+    部分杀毒软件会做 TLS 中间人重签，Node/Bun 自带的 CA 库不信任其根证书，
+    导致模型调用报「unknown certificate verification error」。启动器会把系统
+    根证书导出到 node-extra-ca.pem，这里通过 NODE_EXTRA_CA_CERTS 传给 opencode。
+    """
+    env = dict(os.environ)
+    if not env.get("NODE_EXTRA_CA_CERTS"):
+        pem = os.path.join(SECRETS_DIR, "node-extra-ca.pem")
+        if os.path.isfile(pem):
+            env["NODE_EXTRA_CA_CERTS"] = pem
+    return env
+
+
 def restart_opencode():
     """结束并重启 opencode serve，使插件重新读取 secrets.json（DPAPI 密钥）。"""
     exe = find_opencode_exe()
@@ -282,7 +297,7 @@ def restart_opencode():
     try:
         os.makedirs(SECRETS_DIR, exist_ok=True)
         subprocess.Popen(
-            args, cwd=SECRETS_DIR, env=dict(os.environ),
+            args, cwd=SECRETS_DIR, env=node_tls_env(),
             creationflags=CREATE_NO_WINDOW,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )

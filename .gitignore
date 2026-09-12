@@ -1,3 +1,4 @@
+# 运行/构建产物
 __pycache__/
 *.pyc
 app-profile/
@@ -5,6 +6,28 @@ backups/
 dist/
 release/.cache/
 tools/rcedit-*.exe
+node_modules/
+*.zip
+
+# 敏感数据（密钥、令牌、本机配置）
+secrets.json
+profile.json
+auth.json
+opencode-install.json
+.env
+.env.*
+*.pem
+*.key
+
+# 日志与临时文件
 *.log
 *.bak
-secrets.json
+*.tmp
+*.orig
+*.rej
+Thumbs.db
+.DS_Store
+
+# 编辑器/IDE
+.vscode/
+.idea/

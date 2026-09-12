@@ -338,9 +338,48 @@ def install_opencode():
     return found
 
 
+EXTRA_CA_PEM = os.path.join(DATA_DIR, "node-extra-ca.pem")
+
+
+def ensure_extra_ca_certs(env):
+    """把 Windows 受信任根证书导出为 PEM，供 Node/Bun（opencode）使用。
+
+    部分杀毒软件（如 Kaspersky）会做 HTTPS 中间人扫描，用其自有根证书重签
+    站点证书。Windows 信任它，但 Node/Bun 自带的 CA 库不信任，于是模型调用
+    报「unknown certificate verification error」。这里把系统根证书并入
+    NODE_EXTRA_CA_CERTS，使 opencode 能正常完成 TLS 校验。
+    """
+    if env.get("NODE_EXTRA_CA_CERTS") or not IS_WIN:
+        return
+    try:
+        import ssl
+        import base64
+        pems = []
+        for store in ("ROOT", "CA"):
+            try:
+                for der, enc, _trust in ssl.enum_certificates(store):
+                    if enc != "x509_asn":
+                        continue
+                    b64 = base64.b64encode(der).decode("ascii")
+                    lines = [b64[i:i + 64] for i in range(0, len(b64), 64)]
+                    pems.append("-----BEGIN CERTIFICATE-----\n" + "\n".join(lines) + "\n-----END CERTIFICATE-----\n")
+            except Exception:
+                continue
+        if not pems:
+            return
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(EXTRA_CA_PEM, "w", encoding="ascii") as f:
+            f.write("".join(pems))
+        env["NODE_EXTRA_CA_CERTS"] = EXTRA_CA_PEM
+        log("已导出系统根证书 -> NODE_EXTRA_CA_CERTS (%d 张)" % len(pems))
+    except Exception as e:
+        log("导出系统根证书失败: %r" % e)
+
+
 def start_opencode(exe):
     log("启动 opencode serve :%d" % OPENCODE_PORT)
     env = dict(os.environ)
+    ensure_extra_ca_certs(env)
     args = [exe, "serve", "--port", str(OPENCODE_PORT), "--hostname", "127.0.0.1"]
     if exe.lower().endswith((".cmd", ".bat")):
         args = ["cmd", "/c"] + args
@@ -508,6 +547,8 @@ def main():
         os.makedirs(DATA_DIR, exist_ok=True)
     except Exception:
         pass
+
+    ensure_extra_ca_certs(os.environ)
 
     install_plugin()
 

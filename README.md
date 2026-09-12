@@ -4,6 +4,13 @@
 
 本程序把 **opencode**（AI 编码代理）的本地服务 + 一个 Python 代理 + 一个网页前端打包在一起，解压后双击即可使用。
 
+> **声明**
+>
+> - 这是一个**个人自用的练习 / 学习项目**，由作者业余时间开发维护，**非商业、非官方**。
+> - 本项目是一个**第三方图形前端**，与 [opencode](https://github.com/sst/opencode) 及其开发团队**无任何隶属或官方关联**；“opencode”等相关名称与商标归其各自所有者。
+> - 软件按「现状」提供，**不提供任何明示或暗示的担保**；使用前请自行评估风险。
+> - 以 **MIT 许可证**开源，详见 [LICENSE](LICENSE)；第三方组件许可见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
+
 ---
 
 ## 快速开始
@@ -65,6 +72,11 @@ opencode-chat\
 - 也可手动执行 `npm install -g opencode-ai`（需已安装 Node.js），然后重新双击。
 - 或在设置里检查服务商 API Key 是否正确、是否有余额。
 
+**发消息报 `unknown certificate verification error` / `fetch failed`**
+- 多由**杀毒软件的 HTTPS 扫描**（常见于 Kaspersky）引起：它用自有根证书做中间人解密，Windows 信任该证书，但 opencode 使用的 Node/Bun 运行时只信任自带 CA 库，因此 TLS 校验失败。
+- 本程序会自动把系统根证书导出为 `%USERPROFILE%\.config\opencode-chat\node-extra-ca.pem`，并通过 `NODE_EXTRA_CA_CERTS` 传给 opencode，一般无需手动处理；若仍报错，请**完全退出程序**（确保 `opencode.exe` 已结束）后重新双击。
+- 也可在杀毒软件中把以下域名加入**扫描排除 / 信任**，或关闭「扫描加密连接」：`api.deepseek.com`、`api.siliconflow.cn`、`registry.npmjs.org` 等。
+
 **连接服务商后模型列表看不到**
 - 保存 API Key 后程序会**自动重启 opencode** 使密钥生效，稍候模型即会出现（v0.1.78+）。
 - 若仍未出现：打开「服务商与模型」，点右上角 **重启 opencode** 按钮重试；再检查 Key / 余额是否正确。
@@ -118,3 +130,12 @@ powershell -ExecutionPolicy Bypass -File release\build.ps1
 ```
 
 依赖：Windows + .NET Framework 4（`csc.exe`），以及网络（首次下载便携 Python）。
+
+---
+
+## 开源许可与第三方声明
+
+- 本项目以 **MIT 许可证**开源，全文见 [LICENSE](LICENSE)。
+- 本项目为**个人自用的练习 / 学习项目**，**非官方**、与上游 opencode 项目无隶属关系。
+- 分发的第三方组件（marked、DOMPurify、KaTeX、highlight.js、便携 Python 等）及其许可与版权声明，见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
+- 安全问题上报方式见 [SECURITY.md](SECURITY.md)。
