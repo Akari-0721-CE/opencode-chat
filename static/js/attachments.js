@@ -2,12 +2,26 @@
 const MAX_FILE = 20 * 1024 * 1024;
 const IMG_MAX_SIDE = 1024;
 let toastTimer = null;
-function showToast(msg, isError) {
-  toastEl.textContent = msg;
+function showToast(msg, isError, action) {
+  if (isError && typeof pushError === "function") pushError("toast", msg);
+  toastEl.innerHTML = "";
+  toastEl.appendChild(el("span", "toast-msg", msg));
+  if (action && action.label) {
+    const cb = action.onClick || null;
+    const b = el("button", "toast-action", action.label);
+    b.type = "button";
+    b.onclick = () => {
+      clearTimeout(toastTimer);
+      toastEl.classList.remove("show");
+      if (cb) cb();
+    };
+    toastEl.appendChild(b);
+  }
   toastEl.classList.toggle("error", !!isError);
+  toastEl.classList.toggle("has-action", !!(action && action.label));
   toastEl.classList.add("show");
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => toastEl.classList.remove("show"), 3200);
+  toastTimer = setTimeout(() => toastEl.classList.remove("show"), action && action.label ? 6000 : 3200);
 }
 
 function fmtSize(n) {
@@ -86,6 +100,10 @@ function unsupportedMsg(kind) {
   const label = { image: "图片", pdf: "PDF", audio: "音频", video: "视频" }[kind] || "该类型文件";
   return "模型「" + name + "」不支持" + label + "输入，请切换到支持的模型";
 }
+function autoOcrEnabled() {
+  const a = activeAssistant();
+  return !!(a && a.autoOcr);
+}
 
 function fileToDataUrl(file) {
   return new Promise((resolve, reject) => {
@@ -157,6 +175,18 @@ function renderAttachments() {
     chip.appendChild(meta);
     if (at.cropped) chip.appendChild(el("span", "a-badge", "已裁剪"));
     else if (at.compressed) chip.appendChild(el("span", "a-badge", "已压缩"));
+    if (at.kind === "image" && typeof openOcrPanel === "function") {
+      const ocrBtn = el("button", "a-ocr", "OCR");
+      ocrBtn.title = "识别此图片文字";
+      ocrBtn.onclick = (e) => {
+        e.stopPropagation();
+        const seed = attachments.filter(x => x.kind === "image").map(x => ({ name: x.name, mime: x.mime, dataUrl: x.dataUrl, source: "附件" }));
+        openOcrPanel(seed);
+        const it = ocrItems.find(x => x.dataUrl === at.dataUrl);
+        if (it) runOneOcr(it);
+      };
+      chip.appendChild(ocrBtn);
+    }
     const rm = el("button", "a-remove", "×");
     rm.title = "移除";
     rm.onclick = () => { attachments = attachments.filter(x => x.id !== at.id); renderAttachments(); };
@@ -166,55 +196,83 @@ function renderAttachments() {
   updateSendState();
 }
 
+async function buildAttachmentData(file, kind, isImg) {
+  let dataUrl = "";
+  let mime = file.type || "application/octet-stream";
+  let size = file.size || 0;
+  let compressed = false;
+  if (isImg && imgCompressEnabled()) {
+    try {
+      const r = await compressImage(file, IMG_MAX_SIDE);
+      if (r) { dataUrl = r.dataUrl; mime = r.mime; size = dataUrlSize(r.dataUrl); compressed = true; }
+    } catch (e) { /* 压缩失败则回退原图 */ }
+  }
+  if (!dataUrl) {
+    try { dataUrl = await fileToDataUrl(file); }
+    catch (e) { showToast("读取「" + file.name + "」失败：" + e.message, true); return null; }
+    mime = file.type || "application/octet-stream";
+    size = file.size || 0;
+    compressed = false;
+  }
+  return { file, kind, dataUrl, mime, size, compressed, cropped: false };
+}
+
 async function addFiles(fileList) {
   const files = Array.from(fileList || []);
   if (!files.length) return;
+  const items = [];
   for (const file of files) {
     const kind = classify(file.type);
-    if (!modelSupports(kind)) { showToast(unsupportedMsg(kind), true); continue; }
-    if (file.size > MAX_FILE) { showToast("「" + file.name + "」超过 20 MB 限制", true); continue; }
+    if (!(kind === "image" && autoOcrEnabled()) && !modelSupports(kind)) { showToast(unsupportedMsg(kind), true); continue; }
+    if (file.size > MAX_FILE) { showToast(typeof tf === "function" ? tf("「{0}」超过 20 MB 限制", file.name) : ("「" + file.name + "」超过 20 MB 限制"), true); continue; }
     const t = String(file.type || "").toLowerCase();
     const isImg = kind === "image" && t !== "image/gif" && t !== "image/svg+xml";
-    let dataUrl = "";
-    let mime = file.type || "application/octet-stream";
-    let size = file.size || 0;
-    let compressed = false;
-    let cropped = false;
     if (isImg && imgCropEnabled()) {
-      const r = await cropImageFile(file, {
-        outSize: IMG_MAX_SIDE,
-        mime: cropOutMime(file.type, "image/jpeg"),
-        title: "裁剪图片" + (file.name ? "：" + file.name : ""),
-        ratios: [
-          { label: "原始", value: "orig" },
-          { label: "1:1", value: 1 },
-          { label: "4:3", value: 4 / 3 },
-          { label: "3:4", value: 3 / 4 },
-          { label: "16:9", value: 16 / 9 },
-          { label: "9:16", value: 9 / 16 },
-        ],
-      });
-      if (!r) continue;
-      dataUrl = r.dataUrl;
-      mime = r.mime;
-      size = dataUrlSize(r.dataUrl);
-      cropped = true;
-    } else if (isImg && imgCompressEnabled()) {
-      try {
-        const r = await compressImage(file, IMG_MAX_SIDE);
-        if (r) { dataUrl = r.dataUrl; mime = r.mime; size = dataUrlSize(r.dataUrl); compressed = true; }
-      } catch (e) { /* 压缩失败则回退原图 */ }
+      items.push({ file, kind: "image", crop: true });
+    } else {
+      const built = await buildAttachmentData(file, kind, isImg);
+      if (built) items.push(built);
     }
-    if (!dataUrl) {
-      try { dataUrl = await fileToDataUrl(file); }
-      catch (e) { showToast("读取「" + file.name + "」失败：" + e.message, true); continue; }
-      mime = file.type || "application/octet-stream";
-      size = file.size || 0;
-      compressed = false;
+  }
+  const cropItems = items.filter(it => it.crop);
+  if (cropItems.length) {
+    const results = await cropBatch(cropItems.map(it => it.file), {
+      outSize: IMG_MAX_SIDE,
+      mime: cropOutMime(cropItems[0].file.type, "image/jpeg"),
+      title: "裁剪图片",
+      ratios: [
+        { label: "原始", value: "orig" },
+        { label: "1:1", value: 1 },
+        { label: "4:3", value: 4 / 3 },
+        { label: "3:4", value: 3 / 4 },
+        { label: "16:9", value: 16 / 9 },
+        { label: "9:16", value: 9 / 16 },
+      ],
+    });
+    for (let i = 0; i < cropItems.length; i++) {
+      const it = cropItems[i];
+      const r = results[i];
+      if (!r) { it.skip = true; continue; }
+      if (r.original) {
+        const built = await buildAttachmentData(it.file, "image", true);
+        if (built) { Object.assign(it, built); it.crop = false; }
+        else it.skip = true;
+      } else {
+        it.dataUrl = r.dataUrl;
+        it.mime = r.mime;
+        it.size = dataUrlSize(r.dataUrl);
+        it.compressed = false;
+        it.cropped = true;
+        it.crop = false;
+      }
     }
+  }
+  for (const it of items) {
+    if (it.skip || !it.dataUrl) continue;
     attachments.push({
-      id: uid("att"), name: file.name || ("file-" + Date.now()),
-      mime, size, kind, dataUrl, compressed, cropped,
+      id: uid("att"), name: (it.file && it.file.name) || ("file-" + Date.now()),
+      mime: it.mime, size: it.size, kind: it.kind, dataUrl: it.dataUrl,
+      compressed: !!it.compressed, cropped: !!it.cropped,
     });
   }
   renderAttachments();
@@ -227,7 +285,8 @@ function clearAttachments() {
 
 function updateSendState() {
   if (!currentSession) return;
-  sendBtn.disabled = busy || (!input.value.trim() && !attachments.length);
+  const ocrBusy = (typeof ocrSending !== "undefined") && ocrSending;
+  sendBtn.disabled = busy || ocrBusy || (!input.value.trim() && !attachments.length);
 }
 
 attachBtn.onclick = () => fileInput.click();

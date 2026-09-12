@@ -2,6 +2,9 @@ __pycache__/
 *.pyc
 app-profile/
 backups/
+dist/
+release/.cache/
+tools/rcedit-*.exe
 *.log
 *.bak
 secrets.json

@@ -8,12 +8,18 @@ function handleEvent(evt) {
 
   switch (evt.type) {
     case "message.updated": {
-      if (p.info) { const holder = ensureMessageEl(p.info); updateTokenBadge(p.info); renderMessageError(holder, p.info); }
+      if (p.info) {
+        const holder = ensureMessageEl(p.info);
+        dirtyMsgIds.add(p.info.id);
+        updateTokenBadge(p.info);
+        renderMessageError(holder, p.info);
+      }
       break;
     }
     case "message.part.updated": {
       const part = p.part;
       if (!part) break;
+      if (part.messageID) dirtyMsgIds.add(part.messageID);
       const el = ensurePartEl(part);
       if (el) {
         if (part.type === "text") {
@@ -32,11 +38,15 @@ function handleEvent(evt) {
           updateTool(el, part);
         }
       }
+      const ocrOwner = msgEls[part.messageID];
+      if (ocrOwner && ocrOwner.role === "user" && typeof maybeAttachLocalOcrImages === "function") maybeAttachLocalOcrImages(ocrOwner);
       break;
     }
     case "message.part.delta": {
       const el = partEls[p.partID];
       if (el && p.field === "text") {
+        const owner = el.closest(".msg");
+        if (owner && owner.dataset.id) dirtyMsgIds.add(owner.dataset.id);
         el.__raw = (el.__raw || "") + (p.delta || "");
         el.textContent = el.__raw;
         if (el.classList && el.classList.contains("reasoning")) stickReasoning(el);
@@ -53,6 +63,10 @@ function handleEvent(evt) {
       finalizeMarkdown();
       setupAllVersionNavs();
       if (typeof maybeAutoProxyNext === "function") maybeAutoProxyNext();
+      if (typeof notifyDesktop === "function") {
+        const st = currentSession && (currentSession.title || currentSession.id);
+        notifyDesktop("回复已完成", st ? "「" + st + "」" : "会话已完成回复", "oc-reply");
+      }
       break;
     }
     case "question.replied":
@@ -75,28 +89,57 @@ function handleEvent(evt) {
       if (info && sessionsCache.some(s => s.id === info.id)) {
         const s = sessionsCache.find(s => s.id === info.id);
         s.title = info.title || s.title;
-        renderSessions(sessionsCache);
+        refreshSessionList();
       }
       break;
     }
     case "session.deleted": {
       const info = p.info;
-      if (info && sessionsCache.some(s => s.id === info.id)) {
-        dropDraft(info.id);
-        sessionsCache = sessionsCache.filter(s => s.id !== info.id);
-        renderSessions(sessionsCache);
+      if (info) {
+        if (Array.isArray(S.trash) && S.trash.some(t => t.id === info.id)) {
+          S.trash = S.trash.filter(t => t.id !== info.id);
+          saveStore();
+        }
+        if (sessionsCache.some(s => s.id === info.id)) {
+          dropDraft(info.id);
+          sessionsCache = sessionsCache.filter(s => s.id !== info.id);
+          refreshSessionList();
+        }
       }
       break;
     }
   }
+  scheduleEventUi();
+}
+
+let eventUiPending = false;
+function flushEventUi() {
+  eventUiPending = false;
   markLastAssistant();
-  updateScrollBottom();
+  if (typeof updateScrollBottom === "function") updateScrollBottom();
+}
+function scheduleEventUi() {
+  if (typeof lowPerfEnabled === "function" && lowPerfEnabled()) {
+    if (!eventUiPending) {
+      eventUiPending = true;
+      if (typeof requestAnimationFrame === "function") requestAnimationFrame(flushEventUi);
+      else setTimeout(flushEventUi, 0);
+    }
+    return;
+  }
+  flushEventUi();
 }
 
 function finalizeMarkdown() {
-  document.querySelectorAll(".msg .bubble").forEach(b => {
-    if (window.marked) renderMarkdown(b, b.__raw !== undefined ? b.__raw : b.textContent);
-  });
+  if (!dirtyMsgIds.size) return;
+  for (const id of dirtyMsgIds) {
+    const entry = msgEls[id];
+    if (!entry || !entry.el) continue;
+    entry.el.querySelectorAll(".bubble:not(.ver-old)").forEach((b) => {
+      if (b.__raw !== undefined) renderMarkdown(b, b.__raw);
+    });
+  }
+  dirtyMsgIds.clear();
 }
 
 async function handlePermission(p) {
@@ -111,6 +154,10 @@ async function handlePermission(p) {
     }
   }
   pendingPerms.push(p);
+  if (typeof notifyDesktop === "function") {
+    const pats = (p.patterns && p.patterns.length) ? "：" + p.patterns.slice(0, 3).join(", ") : "";
+    notifyDesktop("需要授权确认", (p.permission || "agent 请求权限") + pats, "oc-perm");
+  }
   if (pendingPerms.length === 1) showPermModal();
 }
 
@@ -173,6 +220,10 @@ async function handleQuestion(p) {
   const callID = p.tool && p.tool.callID;
   if (callID) questionByCall[callID] = p;
   if (!pendingQuestions.some(q => q.id === p.id)) pendingQuestions.push(p);
+  if (typeof notifyDesktop === "function") {
+    const q = (p.questions && p.questions[0]) || null;
+    notifyDesktop("需要你的回答", (q && (q.header || q.question)) || "agent 提出了一个问题", "oc-question");
+  }
   const tEl = questionToolEl(callID);
   if (tEl && tEl.__part) {
     updateTool(tEl, tEl.__part);
@@ -329,7 +380,7 @@ function renderQuestion(body, part) {
 }
 
 function setBusy(b) {
-  if (!b) finalizeDurations();
+  if (!b) { finalizeDurations(); finalizeMarkdown(); }
   busy = b;
   sendBtn.disabled = b || !currentSession;
   stopBtn.disabled = !b;

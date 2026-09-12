@@ -9,13 +9,16 @@ rem    rollback.bat rollback       same
 rem    rollback.bat backup [label] create a snapshot (default: stable)
 rem    rollback.bat list           list snapshots
 rem    rollback.bat <name>         roll back to a specific snapshot
-rem  Snapshot files: server.py, static\ (whole dir),
-rem                  plugin base-override.ts, CHANGELOG.md
+rem  Snapshot files: server.py, static\ (whole dir), VERSION,
+rem                  plugin\base-override.ts, CHANGELOG.md,
+rem                  README.md, release\ (launcher.cs/launcher.py/
+rem                  build.ps1/uninstall.bat/uninstall.ps1)
 rem ============================================================
 
 set "ROOT=%~dp0"
 if "%ROOT:~-1%"=="\" set "ROOT=%ROOT:~0,-1%"
 set "BK=%ROOT%\backups"
+set "PLUGIN_SRC=%ROOT%\plugin\base-override.ts"
 set "PLUGIN=%USERPROFILE%\.config\opencode\plugin\base-override.ts"
 
 if not exist "%BK%" mkdir "%BK%" 2>nul
@@ -44,6 +47,7 @@ goto :end
 :backup
 set "LABEL=%~2"
 if "%LABEL%"=="" set "LABEL=stable"
+call :checklabel "%LABEL%"
 call :preflight
 if errorlevel 1 goto :end
 call :mksnap "%LABEL%"
@@ -89,16 +93,28 @@ call :mksnap "pre-rollback"
 echo Safety snapshot of current state: !DEST!
 
 if exist "%SRC%\server.py"     copy /y "%SRC%\server.py"     "%ROOT%\server.py" >nul
+if exist "%SRC%\VERSION"       copy /y "%SRC%\VERSION"       "%ROOT%\VERSION" >nul
 set "RESTORED_STATIC="
 if exist "%SRC%\static\" (
-  if exist "%ROOT%\static\js" rmdir /s /q "%ROOT%\static\js"
-  if exist "%ROOT%\static\css" rmdir /s /q "%ROOT%\static\css"
+  if exist "%ROOT%\static" rmdir /s /q "%ROOT%\static"
   xcopy /e /i /y "%SRC%\static" "%ROOT%\static" >nul
   set "RESTORED_STATIC=1"
 )
 if not defined RESTORED_STATIC if exist "%SRC%\index.html" copy /y "%SRC%\index.html" "%ROOT%\static\index.html" >nul
-if exist "%SRC%\base-override.ts" copy /y "%SRC%\base-override.ts" "%PLUGIN%" >nul
+if exist "%SRC%\base-override.ts" (
+  if not exist "%ROOT%\plugin" mkdir "%ROOT%\plugin" 2>nul
+  copy /y "%SRC%\base-override.ts" "%ROOT%\plugin\base-override.ts" >nul
+  if not exist "%USERPROFILE%\.config\opencode\plugin" mkdir "%USERPROFILE%\.config\opencode\plugin" 2>nul
+  copy /y "%SRC%\base-override.ts" "%PLUGIN%" >nul
+)
 if exist "%SRC%\CHANGELOG.md"  copy /y "%SRC%\CHANGELOG.md"  "%ROOT%\CHANGELOG.md" >nul
+if exist "%SRC%\README.md"     copy /y "%SRC%\README.md"     "%ROOT%\README.md" >nul
+if exist "%SRC%\release\" (
+  if not exist "%ROOT%\release" mkdir "%ROOT%\release" 2>nul
+  for %%f in (launcher.cs launcher.py build.ps1 uninstall.bat uninstall.ps1) do (
+    if exist "%SRC%\release\%%f" copy /y "%SRC%\release\%%f" "%ROOT%\release\%%f" >nul
+  )
+)
 
 echo.
 echo [OK] Restored: %SNAP%
@@ -138,15 +154,33 @@ echo [PREFLIGHT] OK
 exit /b 0
 
 
+:checklabel
+set "LB=%~1"
+if /i not "%LB:~0,1%"=="v" exit /b 0
+for /f "tokens=1 delims=-" %%a in ("%LB%") do set "LVER=%%a"
+if not exist "%ROOT%\VERSION" exit /b 0
+set /p "CVER="<"%ROOT%\VERSION"
+if /i not "%LVER%"=="v%CVER%" echo [WARN] snapshot label "%LB%" does not match VERSION "%CVER%"
+exit /b 0
+
+
 :mksnap
 set "SLABEL=%~1"
 for /f %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd-HHmmss"') do set "STS=%%i"
 set "DEST=%BK%\%SLABEL%-%STS%"
 mkdir "%DEST%" 2>nul
 if exist "%ROOT%\server.py"          copy /y "%ROOT%\server.py"          "%DEST%\server.py" >nul
+if exist "%ROOT%\VERSION"            copy /y "%ROOT%\VERSION"            "%DEST%\VERSION" >nul
 if exist "%ROOT%\static"             xcopy /e /i /y "%ROOT%\static"      "%DEST%\static" >nul
-if exist "%PLUGIN%"                  copy /y "%PLUGIN%"                  "%DEST%\base-override.ts" >nul
+if exist "%PLUGIN_SRC%"              copy /y "%PLUGIN_SRC%"              "%DEST%\base-override.ts" >nul
 if exist "%ROOT%\CHANGELOG.md"       copy /y "%ROOT%\CHANGELOG.md"       "%DEST%\CHANGELOG.md" >nul
+if exist "%ROOT%\README.md"          copy /y "%ROOT%\README.md"          "%DEST%\README.md" >nul
+if exist "%ROOT%\release" (
+  if not exist "%DEST%\release" mkdir "%DEST%\release" 2>nul
+  for %%f in (launcher.cs launcher.py build.ps1 uninstall.bat uninstall.ps1) do (
+    if exist "%ROOT%\release\%%f" copy /y "%ROOT%\release\%%f" "%DEST%\release\%%f" >nul
+  )
+)
 > "%DEST%\MANIFEST.txt" echo label=%SLABEL%
 >>"%DEST%\MANIFEST.txt" echo date=%DATE% %TIME%
 exit /b 0

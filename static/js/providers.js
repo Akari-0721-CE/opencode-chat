@@ -78,17 +78,22 @@ async function loadTools() {
     allToolIds = (Array.isArray(ids) ? ids : []).filter(id => id && id !== "invalid");
   } catch (e) {
     console.error(e);
-    allToolIds = ["bash", "read", "glob", "grep", "edit", "write", "task", "webfetch", "todowrite", "websearch", "skill", "apply_patch"];
+    allToolIds = ["question", "bash", "read", "glob", "grep", "edit", "write", "task", "webfetch", "todowrite", "websearch", "skill", "apply_patch"];
   }
 }
 
 function updateModelSelect() {
   const a = activeAssistant();
-  if (!a) { modelSelect.value = ""; updateVariantSelect(); return; }
-  if (a.model) modelSelect.value = modelKey(a.model.providerID, a.model.id);
-  else modelSelect.value = "";
+  const val = currentModelValue();
+  modelSelect.value = val;
+  const lbl = $("modelPickLabel");
+  if (lbl) lbl.textContent = a ? modelDisplayName(a.model) : "（无助手）";
+  const btn = $("modelPickBtn");
+  if (btn) btn.disabled = !a;
   updateVariantSelect();
-  updateCtxRing();
+  if (a) updateCtxRing();
+  const pop = $("modelPop");
+  if (pop && !pop.hidden) renderModelList();
 }
 
 function fillVariantOptions(sel, variants, selected, withNone) {
@@ -123,10 +128,9 @@ function updateVariantSelect() {
   fillVariantOptions(variantSelect, variants, a ? a.variant : "", withNone);
 }
 
-modelSelect.onchange = () => {
+function applyModelSelection(val) {
   const a = activeAssistant();
   if (!a) return;
-  const val = modelSelect.value;
   if (!val) { a.model = null; }
   else {
     a.model = parseModelKey(val);
@@ -139,8 +143,123 @@ modelSelect.onchange = () => {
   saveStore();
   defaultModel = a.model;
   if (a.model) localStorage.setItem("oc_model", JSON.stringify(a.model));
+  modelSelect.value = val || "";
   updateVariantSelect();
-};
+  updateModelSelect();
+}
+modelSelect.onchange = () => applyModelSelection(modelSelect.value);
+
+/* ============ 模型选择器（搜索 + 折叠提供商） ============ */
+function currentModelValue() {
+  const a = activeAssistant();
+  return (a && a.model) ? modelKey(a.model.providerID, a.model.id) : "";
+}
+function modelDisplayName(ref) {
+  if (!ref) return "（默认模型）";
+  const m = (typeof findModel === "function") ? findModel({ providerID: ref.providerID, modelID: ref.id || ref.modelID }) : null;
+  return (m && (m.name || m.id)) || ref.id || ref.modelID || "模型";
+}
+let modelCollapsed = (function () {
+  try {
+    const arr = JSON.parse(localStorage.getItem("oc_model_collapsed") || "[]");
+    return new Set(Array.isArray(arr) ? arr : []);
+  } catch (e) { return new Set(); }
+})();
+function saveModelCollapsed() {
+  try { localStorage.setItem("oc_model_collapsed", JSON.stringify(Array.from(modelCollapsed))); } catch (e) {}
+}
+function filterModelGroups(providers, qRaw) {
+  const q = String(qRaw || "").trim().toLowerCase();
+  const out = [];
+  for (const prov of providers || []) {
+    const pName = prov.name || prov.id || "";
+    const provMatch = !q || pName.toLowerCase().indexOf(q) >= 0 || String(prov.id || "").toLowerCase().indexOf(q) >= 0;
+    const models = prov.models || [];
+    const items = provMatch ? models : models.filter((m) =>
+      (m.name || m.id || "").toLowerCase().indexOf(q) >= 0 || String(m.id || "").toLowerCase().indexOf(q) >= 0);
+    if (items.length) out.push({ prov, items: items, all: provMatch });
+  }
+  return out;
+}
+function renderModelItems(box, q, current, onPick, emptyLabel, rerender) {
+  if (!box) return;
+  const query = String(q || "").trim().toLowerCase();
+  box.innerHTML = "";
+  if (emptyLabel != null) {
+    const d = el("button", "model-item" + (current === "" ? " on" : ""));
+    d.type = "button";
+    d.textContent = emptyLabel;
+    d.onclick = () => onPick("");
+    box.appendChild(d);
+  }
+  const groups = filterModelGroups(modelsByProvider, query);
+  if (!groups.length) { box.appendChild(el("div", "model-empty", "没有匹配的模型")); return; }
+  for (const g of groups) {
+    const prov = g.prov;
+    const collapsed = !query && modelCollapsed.has(prov.id);
+    const head = el("button", "model-group");
+    head.type = "button";
+    head.appendChild(el("span", "model-group-name", prov.name || prov.id));
+    head.appendChild(el("span", "model-group-count", String(g.items.length)));
+    head.appendChild(el("span", "model-group-chev" + (collapsed ? "" : " open"), "▸"));
+    head.onclick = () => {
+      if (modelCollapsed.has(prov.id)) modelCollapsed.delete(prov.id);
+      else modelCollapsed.add(prov.id);
+      saveModelCollapsed();
+      if (typeof rerender === "function") rerender();
+    };
+    box.appendChild(head);
+    if (collapsed) continue;
+    for (const m of g.items) {
+      const val = modelKey(m.providerID, m.id);
+      const b = el("button", "model-item" + (val === current ? " on" : ""));
+      b.type = "button";
+      b.appendChild(el("span", "model-item-name", m.name || m.id));
+      b.title = (prov.name || prov.id) + " · " + (m.name || m.id);
+      b.onclick = () => onPick(val);
+      box.appendChild(b);
+    }
+  }
+}
+function renderModelList() {
+  const box = $("modelList");
+  const q = ($("modelSearch") && $("modelSearch").value) || "";
+  renderModelItems(box, q, currentModelValue(), (v) => { applyModelSelection(v); closeModelPop(); }, "（默认模型）", renderModelList);
+}
+function openModelPop() {
+  const pop = $("modelPop");
+  if (!pop) return;
+  if ($("modelSearch")) $("modelSearch").value = "";
+  pop.hidden = false;
+  renderModelList();
+  setTimeout(() => { if ($("modelSearch")) $("modelSearch").focus(); }, 20);
+}
+function closeModelPop() {
+  const pop = $("modelPop");
+  if (pop) pop.hidden = true;
+}
+if ($("modelPickBtn")) {
+  $("modelPickBtn").onclick = (e) => {
+    e.stopPropagation();
+    if ($("modelPop").hidden) openModelPop(); else closeModelPop();
+  };
+}
+if ($("modelSearch")) {
+  $("modelSearch").addEventListener("input", renderModelList);
+  $("modelSearch").addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { e.preventDefault(); closeModelPop(); }
+    else if (e.key === "Enter") {
+      e.preventDefault();
+      const first = $("modelList").querySelector(".model-item");
+      if (first) first.click();
+    }
+  });
+}
+document.addEventListener("click", (e) => {
+  const pick = $("modelPick");
+  if (pick && !pick.contains(e.target)) closeModelPop();
+});
+
 variantSelect.onchange = () => {
   const a = activeAssistant();
   if (!a) return;
@@ -280,14 +399,15 @@ function renderProviders() {
     head.appendChild(names);
     const connected = providerConnected(p.id);
     const localOnly = localSecretProviders.indexOf(p.id) >= 0;
-    head.appendChild(el("span", "prov-badge" + (connected ? " on" : ""), localOnly ? "本地加密" : (connected ? "已连接" : "未连接")));
+    const tr = (s) => (typeof t === "function" ? t(s) : s);
+    head.appendChild(el("span", "prov-badge" + (connected ? " on" : ""), localOnly ? tr("本地加密") : (connected ? tr("已连接") : tr("未连接"))));
     const mcount = p.models ? Object.keys(p.models).length : 0;
     head.appendChild(el("span", "prov-count", mcount + " 个模型"));
     const actions = el("div", "prov-actions");
     const methods = providerMethods(p.id).slice();
-    if (p.id !== "opencode") methods.push({ type: "api", label: "手动 API Key（可自定义 Base URL）", manual: true });
+    if (p.id !== "opencode") methods.push({ type: "api", label: (typeof t === "function" ? t("手动 API Key（可自定义 Base URL）") : "手动 API Key（可自定义 Base URL）"), manual: true });
     if (methods.length) {
-      const b = el("button", "prov-action", connected ? "重新连接" : "连接");
+      const b = el("button", "prov-action", connected ? (typeof t === "function" ? t("重新连接") : "重新连接") : (typeof t === "function" ? t("连接") : "连接"));
       b.onclick = () => connectProvider(p, methods);
       actions.appendChild(b);
     }
@@ -306,7 +426,7 @@ function renderProviders() {
       const bp = el("button", "prov-action", "清除明文");
       bp.title = "从 opencode auth.json 移除明文密钥（备份为 auth.json.bak）";
       bp.onclick = async () => {
-        if (!confirm("从 opencode 的 auth.json 移除「" + p.id + "」的明文密钥？（会备份为 auth.json.bak，需已重启 opencode 使加密密钥生效）")) return;
+        if (!(await confirmDialog({ title: "清除明文密钥", text: "从 opencode 的 auth.json 移除「" + p.id + "」的明文密钥？（会备份为 auth.json.bak，需已重启 opencode 使加密密钥生效）", okText: "清除", danger: true }))) return;
         try {
           await api("/_secret/purge", {
             method: "POST", noDir: true,
@@ -351,7 +471,7 @@ function pickProviderModel(providerID, modelID, name) {
   defaultModel = a.model;
   localStorage.setItem("oc_model", JSON.stringify(a.model));
   updateModelSelect();
-  showToast("已选择模型：" + name);
+  showToast(typeof tf === "function" ? tf("已选择模型：{0}", name) : ("已选择模型：" + name));
 }
 function connectProvider(p, methods) {
   if (methods.length === 1) { startAuth(p, 0, methods[0]); return; }
@@ -395,8 +515,11 @@ function openProviderKey(p) {
           body: JSON.stringify({ provider: p.id }),
         });
       } catch (e) { /* auth.json 可能不存在该键 */ }
-      showToast("已加密保存；请重启 opencode 生效");
+      showToast(typeof t === "function" ? t("已保存，正在重启 opencode 使密钥生效…") : "已保存，正在重启 opencode 使密钥生效…");
+      const ok = await restartOpencode();
       await refreshAfterConnect();
+      if (ok) showToast(typeof tf === "function" ? tf("已连接并生效：{0}", p.name || p.id) : ("已连接并生效：" + (p.name || p.id)));
+      else showToast("已保存，但重启 opencode 失败；可点右上角 ↻ 重启按钮重试", true);
     } catch (e) { showToast("保存失败：" + e.message, true); }
   };
 }
@@ -449,16 +572,90 @@ function pollOAuth(id) {
         clearInterval(oauthPollTimer); oauthPollTimer = null;
         $("oauthMask").classList.remove("show");
         oauthCtx = null;
-        showToast("已连接 " + id);
+        showToast(typeof tf === "function" ? tf("已连接 {0}", id) : ("已连接 " + id));
         await refreshAfterConnect();
       }
     } catch (e) { /* keep polling */ }
   }, 1500);
 }
+async function restartOpencode() {
+  try {
+    const r = await api("/_opencode/restart", { method: "POST", noDir: true });
+    if (r && r.ok) { await new Promise((res) => setTimeout(res, 800)); return true; }
+    if (r && r.error) console.warn("restart opencode:", r.error);
+    return false;
+  } catch (e) { console.warn("restart opencode failed:", e); return false; }
+}
 async function refreshAfterConnect() {
   try { await loadModels(); } catch (e) {}
   try { await loadProviders(); renderProviders(); } catch (e) {}
   updateModelSelect();
+}
+
+/* ============ 首次运行：opencode 准备/下载进度提示 ============ */
+let bootHintTimer = null;
+const BOOT_ACTIVE_STATES = ["preparing", "downloading", "verifying", "extracting", "installing-npm"];
+function showBootHint(text, pct) {
+  const box = document.getElementById("ocBootHint");
+  if (!box) return;
+  box.hidden = false;
+  const txt = document.getElementById("ocBootHintText");
+  if (txt) txt.textContent = text;
+  const fill = document.getElementById("ocBootHintFill");
+  const bar = document.getElementById("ocBootHintBar");
+  if (fill && bar) {
+    if (pct == null || pct < 0) { bar.style.visibility = "hidden"; }
+    else { bar.style.visibility = ""; fill.style.width = Math.max(0, Math.min(100, pct)).toFixed(1) + "%"; }
+  }
+}
+function hideBootHint() {
+  const box = document.getElementById("ocBootHint");
+  if (box) box.hidden = true;
+}
+async function pollOpencodeStatus() {
+  const tr = (s) => (typeof t === "function" ? t(s) : s);
+  const trf = (s, ...a) => (typeof tf === "function" ? tf(s, ...a) : s.replace(/\{(\d+)\}/g, (m, i) => (a[i] != null ? a[i] : m)));
+  let st = {};
+  try { const r = await api("/_opencode/status", { noDir: true }); st = (r && r.status) || {}; } catch (e) { st = {}; }
+  const state = String(st.state || "");
+  const ready = !!(st.upstream_ready || st.installed);
+  if (ready && BOOT_ACTIVE_STATES.indexOf(state) < 0) { hideBootHint(); return false; }
+  const mb = (st.received || 0) / 1048576;
+  let text = tr("正在准备 opencode（首次运行需下载运行组件）…");
+  let pct = -1;
+  if (state === "downloading") {
+    if (st.total) {
+      const tmb = st.total / 1048576;
+      pct = tmb ? (mb / tmb) * 100 : -1;
+      text = trf("正在下载 opencode：{0} / {1} MB", mb.toFixed(1), tmb.toFixed(1));
+    } else {
+      text = trf("正在下载 opencode… 已 {0} MB", mb.toFixed(1));
+    }
+  } else if (state === "verifying") {
+    text = tr("正在校验 opencode 完整性…");
+  } else if (state === "extracting") {
+    text = tr("正在解压 opencode 运行组件…");
+  } else if (state === "installing-npm") {
+    text = tr("正在通过 npm 安装 opencode…（可能需要几分钟）");
+  } else if (state === "error") {
+    text = trf("opencode 准备失败：{0}（可重开程序自动重试）", st.error || tr("未知错误"));
+  } else if (!ready) {
+    text = tr("正在启动 opencode 本地服务…");
+  }
+  showBootHint(text, pct);
+  return state !== "error";
+}
+function startBootWatch() {
+  if (bootHintTimer) return;
+  const tick = async () => {
+    const cont = await pollOpencodeStatus();
+    if (!cont) {
+      if (bootHintTimer) { clearInterval(bootHintTimer); bootHintTimer = null; }
+      try { await refreshAfterConnect(); } catch (e) { /* ignore */ }
+    }
+  };
+  tick();
+  bootHintTimer = setInterval(tick, 1500);
 }
 function openChoice(title, options, cb) {
   $("choiceTitle").textContent = title;
@@ -477,6 +674,17 @@ $("providerRefresh").onclick = async () => {
   $("providerList").innerHTML = '<div class="prov-empty">加载中…</div>';
   try { await loadProviders(); renderProviders(); } catch (e) { showToast("刷新失败：" + e.message, true); }
 };
+if ($("providerRestart")) {
+  $("providerRestart").onclick = async () => {
+    const btn = $("providerRestart");
+    btn.disabled = true;
+    showToast("正在重启 opencode…");
+    const ok = await restartOpencode();
+    await refreshAfterConnect();
+    btn.disabled = false;
+    showToast(ok ? "opencode 已重启" : "重启失败，请查看日志", !ok);
+  };
+}
 $("providerFilter").addEventListener("input", renderProviders);
 $("providerMask").addEventListener("click", (e) => { if (e.target === $("providerMask")) $("providerMask").classList.remove("show"); });
 $("choiceCancel").onclick = () => $("choiceMask").classList.remove("show");
@@ -501,7 +709,7 @@ $("oauthSubmit").onclick = async () => {
     });
     oauthCtx = null;
     $("oauthMask").classList.remove("show");
-    showToast("已连接 " + ctx.id);
+    showToast(typeof tf === "function" ? tf("已连接 {0}", ctx.id) : ("已连接 " + ctx.id));
     await refreshAfterConnect();
   } catch (e) { showToast("OAuth 失败：" + e.message, true); }
 };

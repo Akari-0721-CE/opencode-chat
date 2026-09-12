@@ -40,8 +40,10 @@ function renderTree() {
     bDel.onclick = (e) => { e.stopPropagation(); deleteAssistant(a.id); };
     actions.append(bFav, bEdit, bCopy, bDel);
     row.appendChild(actions);
+    syncAriaLabels(actions);
 
     row.onclick = () => activateAssistant(a.id, { restore: true });
+    makeRowInteractive(row);
     return row;
   };
 
@@ -67,8 +69,10 @@ function renderTree() {
     bDel.onclick = (e) => { e.stopPropagation(); deleteFolder(f.id); };
     actions.append(bAdd, bEdit, bDel);
     row.appendChild(actions);
+    syncAriaLabels(actions);
 
     row.onclick = () => { f.collapsed = !f.collapsed; saveStore(); renderTree(); };
+    makeRowInteractive(row);
     wrap.appendChild(row);
     const children = el("div", "children");
     addAssistantRows(children, f.id);
@@ -130,14 +134,27 @@ function renameFolder(id) {
     renderTree();
   });
 }
-function deleteFolder(id) {
+async function deleteFolder(id) {
   const f = S.folders.find(x => x.id === id);
   if (!f) return;
-  if (!confirm('删除文件夹「' + f.name + '」？其中的助手将移动到顶层。')) return;
+  const ok = await confirmDialog({ title: "删除文件夹", text: '删除文件夹「' + f.name + '」？其中的助手将移动到顶层。', okText: "删除", danger: true });
+  if (!ok) return;
+  const savedFolder = Object.assign({}, f);
+  const savedIdx = S.folders.findIndex(x => x.id === id);
+  const movedIds = S.assistants.filter(a => a.folderId === id).map(a => a.id);
   S.assistants.forEach(a => { if (a.folderId === id) a.folderId = null; });
   S.folders = S.folders.filter(x => x.id !== id);
   saveStore();
   renderTree();
+  showToast("已删除文件夹「" + f.name + "」", false, {
+    label: "撤销",
+    onClick: () => {
+      S.folders.splice(savedIdx, 0, savedFolder);
+      movedIds.forEach(aid => { const a = S.assistants.find(x => x.id === aid); if (a) a.folderId = id; });
+      saveStore();
+      renderTree();
+    },
+  });
 }
 $("newFolder").onclick = () => createFolder();
 
@@ -233,6 +250,7 @@ function uniqueWorkspace(name) {
   if (!base) return "";
   const folder = sanitizeFolderName(name);
   const used = new Set(S.assistants.map(a => normDir(a.directory)));
+  for (const d of (S.usedDirs || [])) used.add(d);
   let path = base + "\\" + folder;
   let i = 2;
   while (used.has(normDir(path))) { path = base + "\\" + folder + "-" + i; i++; }
@@ -251,13 +269,18 @@ function renderToolChecks(disabled) {
   box.innerHTML = "";
   const off = new Set(disabled || []);
   for (const id of allToolIds) {
+    const info = toolInfo(id);
     const label = el("label", "tool-check");
+    label.title = id + (info.desc ? "：" + info.desc : "");
     const cb = document.createElement("input");
     cb.type = "checkbox";
     cb.value = id;
     cb.checked = !off.has(id);
     label.appendChild(cb);
-    label.appendChild(document.createTextNode(id));
+    const txt = el("span", "tool-check-text");
+    txt.appendChild(el("span", "tool-check-name", info.name));
+    if (info.desc) txt.appendChild(el("span", "tool-check-desc", info.desc));
+    label.appendChild(txt);
     box.appendChild(label);
   }
 }
@@ -280,6 +303,7 @@ function openAssistantModal(id, presetFolder) {
   $("astOverride").checked = !!(a && a.overrideBase);
   $("astPure").checked = !!(a && a.pureInput);
   $("astGitSafe").checked = !!(a && a.gitSafe);
+  $("astAutoOcr").checked = !!(a && a.autoOcr);
   $("astTemp").value = (a && typeof a.temperature === "number") ? String(a.temperature) : "";
   $("astTopP").value = (a && typeof a.topP === "number") ? String(a.topP) : "";
   renderToolChecks(a ? a.disabledTools : []);
@@ -312,14 +336,14 @@ $("astDir").addEventListener("input", () => { astDirAuto = false; });
 $("astSave").onclick = async () => {
   const id = $("astId").value;
   const name = $("astName").value.trim();
-  if (!name) { alert("请输入助手名称"); return; }
+  if (!name) { showToast("请输入助手名称", true); return; }
   let directory = $("astDir").value.trim();
   if (!directory) directory = uniqueWorkspace(name);
-  if (!directory) { alert("请选择工作区目录"); return; }
+  if (!directory) { showToast("请选择工作区目录", true); return; }
   try {
     await ensureWorkspaceDir(directory);
   } catch (e) {
-    alert("创建工作区失败：" + e.message);
+    showToast("创建工作区失败：" + e.message, true);
     return;
   }
   let folderId = $("astFolder").value;
@@ -337,23 +361,25 @@ $("astSave").onclick = async () => {
   let topP = null;
   if (tempRaw !== "") {
     temperature = Number(tempRaw);
-    if (!isFinite(temperature) || temperature < 0 || temperature > 2) { alert("温度需为 0 ~ 2 之间的数字（留空则使用默认）"); return; }
+    if (!isFinite(temperature) || temperature < 0 || temperature > 2) { showToast("温度需为 0 ~ 2 之间的数字（留空则使用默认）", true); return; }
   }
   if (topPRaw !== "") {
     topP = Number(topPRaw);
-    if (!isFinite(topP) || topP < 0 || topP > 1) { alert("topP 需为 0 ~ 1 之间的数字（留空则使用默认）"); return; }
+    if (!isFinite(topP) || topP < 0 || topP > 1) { showToast("topP 需为 0 ~ 1 之间的数字（留空则使用默认）", true); return; }
   }
   const system = $("astSystem").value;
   const overrideBase = $("astOverride").checked;
   const pureInput = $("astPure").checked;
   const gitSafe = $("astGitSafe").checked;
-  if (overrideBase && !system.trim()) { alert("启用「顶掉 opencode 基底提示词」时必须填写系统提示词"); return; }
+  const autoOcr = $("astAutoOcr").checked;
+  if (overrideBase && !system.trim()) { showToast("启用「顶掉 opencode 基底提示词」时必须填写系统提示词", true); return; }
   const disabledTools = Array.from($("astTools").querySelectorAll("input[type=checkbox]"))
     .filter(cb => !cb.checked).map(cb => cb.value);
   const icon = $("astIcon").value.trim();
   const avatar = astAvatarData || "";
-  const assistant = { id, name, icon, avatar, folderId: folderId || null, directory, agent, model, variant, temperature, topP, system, overrideBase, pureInput, gitSafe, disabledTools };
+  const assistant = { id, name, icon, avatar, folderId: folderId || null, directory, agent, model, variant, temperature, topP, system, overrideBase, pureInput, gitSafe, autoOcr, disabledTools };
   const old = id ? S.assistants.find(x => x.id === id) : null;
+  markDirUsed(directory);
 
   if (id) {
     const idx = S.assistants.findIndex(x => x.id === id);
@@ -383,11 +409,17 @@ $("astDelete").onclick = () => {
 $("astCancel").onclick = () => $("assistantMask").classList.remove("show");
 $("newAssistant").onclick = () => openAssistantModal(null, null);
 
-function deleteAssistant(id) {
+async function deleteAssistant(id) {
   const a = S.assistants.find(x => x.id === id);
   if (!a) return;
-  if (!confirm('删除助手「' + a.name + '」？其会话记录仍保留在 opencode 工作区中。')) return;
-  if (a.favorite && !confirm('「' + a.name + '」已收藏。仍要删除吗？')) return;
+  const ok = await confirmDialog({
+    title: "删除助手",
+    text: '删除助手「' + a.name + '」？其会话记录仍保留在 opencode 工作区中。' + (a.favorite ? '\n（该助手已收藏）' : ''),
+    okText: "删除",
+    danger: true,
+  });
+  if (!ok) return;
+  const snapshot = { assistants: S.assistants.slice(), last: Object.assign({}, S.last), activeId: S.activeId };
   S.assistants = S.assistants.filter(x => x.id !== id);
   delete S.last[id];
   if (S.activeId === id) S.activeId = S.assistants[0] ? S.assistants[0].id : null;
@@ -395,6 +427,18 @@ function deleteAssistant(id) {
   renderTree();
   if (S.activeId) activateAssistant(S.activeId, { restore: true });
   else resetMain();
+  showToast("已删除助手「" + a.name + "」", false, {
+    label: "撤销",
+    onClick: () => {
+      S.assistants = snapshot.assistants;
+      S.last = snapshot.last;
+      S.activeId = snapshot.activeId;
+      saveStore();
+      renderTree();
+      if (S.activeId) activateAssistant(S.activeId, { restore: true });
+      else resetMain();
+    },
+  });
 }
 
 function uniqueAssistantName(base) {
@@ -410,13 +454,14 @@ async function duplicateAssistant(id) {
   if (!src) return;
   const name = uniqueAssistantName(src.name);
   const directory = uniqueWorkspace(name);
-  if (!directory) { alert("无法生成新的工作区目录"); return; }
+  if (!directory) { showToast("无法生成新的工作区目录", true); return; }
   try {
     await ensureWorkspaceDir(directory);
   } catch (e) {
-    alert("创建工作区失败：" + e.message);
+    showToast("创建工作区失败：" + e.message, true);
     return;
   }
+  markDirUsed(directory);
   const copy = {
     id: uid("ast"),
     name,

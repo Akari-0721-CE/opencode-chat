@@ -1,5 +1,9 @@
 /* ============ 启动 ============ */
 async function boot() {
+  if (typeof startBootWatch === "function") startBootWatch();
+  if (typeof applyI18n === "function") applyI18n();
+  if (typeof initLangSeg === "function") initLangSeg();
+  if (typeof restoreProfile === "function") { try { await restoreProfile(); } catch (e) {} }
   loadStore();
   await Promise.all([loadModels(), loadAgents(), loadTools(), loadLocalSecrets()]);
 
@@ -9,13 +13,7 @@ async function boot() {
 
   try { if (typeof sweepHostingScratch === "function") await sweepHostingScratch(); } catch (e) {}
 
-  if (!S.assistants.length) {
-    const dir = pathInfo ? (pathInfo.directory || pathInfo.home || "") : "";
-    S.assistants.push({
-      id: uid("ast"), name: "默认助手", icon: "", folderId: null,
-      directory: dir, agent: "build", model: defaultModel || null, system: "",
-    });
-  }
+  if (!S.assistants.length && typeof seedDefaultAssistant === "function") seedDefaultAssistant();
   if (!S.activeId || !S.assistants.some(a => a.id === S.activeId)) {
     S.activeId = S.assistants[0].id;
   }
@@ -25,6 +23,9 @@ async function boot() {
   await activateAssistant(S.activeId, { restore: true });
   connectEvents();
   loadBg();
+  if (typeof initProfileAutosave === "function") initProfileAutosave();
+  if (typeof initRangeFills === "function") initRangeFills();
+  if (typeof maybeShowOnboarding === "function") maybeShowOnboarding();
 }
 boot().catch((e) => {
   console.error(e);

@@ -202,6 +202,7 @@ async function runProxyStep() {
   let dir;
   try { dir = await ensureHostingScratch(); }
   catch (e) { showToast("托管失败：" + e.message, true); return false; }
+  await sweepHostingScratch();
   const modelLabel = rpProxyModelLabel(proxy);
   rpProxyRunning = true;
   rpProxyCancel = false;
@@ -210,7 +211,7 @@ async function runProxyStep() {
   setProxyStatus("正在生成用户发言…");
   let tempSid = null;
   try {
-    let msgs = await api("/session/" + mainSid + "/message", { directory: mainDir });
+    let msgs = await api("/session/" + mainSid + "/message?limit=" + RP_PROXY_TRANSCRIPT_LIMIT, { directory: mainDir });
     const transcript = proxyTranscript(Array.isArray(msgs) ? msgs : []);
     if (!transcript.trim()) { showToast("当前会话还没有可参考的对话", true); return false; }
 

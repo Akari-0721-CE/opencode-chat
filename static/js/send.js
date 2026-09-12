@@ -46,25 +46,70 @@ async function postPrompt(parts) {
   });
 }
 
+let ocrSending = false;
 async function send() {
   if (typeof rpProxyRunning !== "undefined" && rpProxyRunning) return;
   const text = input.value.trim();
-  if ((!text && !attachments.length) || !currentSession || busy) return;
+  if ((!text && !attachments.length) || !currentSession || busy || ocrSending) return;
+  const a0 = activeAssistant();
   for (const at of attachments) {
+    if (at.kind === "image" && a0 && a0.autoOcr) continue;
     if (!modelSupports(at.kind)) { showToast(unsupportedMsg(at.kind), true); return; }
+  }
+  if (a0 && a0.autoOcr && attachments.some(at => at.kind === "image")) {
+    if (!ocrModelRef()) { showToast("已开启自动 OCR，但未配置 OCR 模型（设置 → 高级 → OCR 模型）", true); return; }
+    ocrSending = true;
+    sendBtn.disabled = true;
+    const snap = attachments.slice();
+    const imgCount = snap.filter(at => at.kind === "image").length;
+    if (typeof ocrProgressStart === "function") ocrProgressStart(imgCount);
+    let ok = false;
+    try {
+      const built = await buildOcrSendParts(snap, text, (done, total, name) => {
+        if (typeof ocrProgressStep === "function") ocrProgressStep(done, total, name);
+      });
+      const key = ocrDisplayKeyFromParts(built.parts);
+      if (key && built.images.length) {
+        try { await ocrImgPut(key, built.images); } catch (e) { /* 本地保留失败不阻塞发送 */ }
+      }
+      autoScroll = true;
+      await postPrompt(built.parts);
+      ok = true;
+    } catch (e) {
+      console.error(e);
+      appendNotice("自动 OCR 发送失败：" + e.message + "（内容已保留，可直接重试）", true);
+    } finally {
+      ocrSending = false;
+      if (typeof ocrProgressEnd === "function") ocrProgressEnd();
+      updateSendState();
+    }
+    if (!ok) return;
+    if (input.value.trim() === text) {
+      input.value = "";
+      if (currentSession) saveDraft(currentSession.id, "");
+    }
+    const sentOcrIds = new Set(snap.map(at => at.id));
+    attachments = attachments.filter(at => !sentOcrIds.has(at.id));
+    renderAttachments();
+    return;
   }
   const parts = attachments.map(at => ({ type: "file", mime: at.mime, filename: at.name, url: at.dataUrl }));
   if (text) parts.push({ type: "text", text });
-  input.value = "";
-  if (currentSession) saveDraft(currentSession.id, "");
-  clearAttachments();
+  const sentIds = new Set(attachments.map(at => at.id));
   autoScroll = true;
   try {
     await postPrompt(parts);
   } catch (e) {
     console.error(e);
-    appendNotice("发送失败：" + e.message, true);
+    appendNotice("发送失败：" + e.message + "（内容已保留，可直接重试）", true);
+    return;
   }
+  if (input.value.trim() === text) {
+    input.value = "";
+    if (currentSession) saveDraft(currentSession.id, "");
+  }
+  attachments = attachments.filter(at => !sentIds.has(at.id));
+  renderAttachments();
 }
 
 async function regenerate(assistantId) {
@@ -212,7 +257,10 @@ async function stop() {
 sendBtn.onclick = send;
 stopBtn.onclick = stop;
 input.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey || (!e.shiftKey && !e.altKey))) {
+    e.preventDefault();
+    send();
+  }
 });
 
 /* ============ 回到底部 ============ */
@@ -234,14 +282,4 @@ function applyCollapsed(c) {
 }
 $("toggleSidebar").onclick = () => applyCollapsed(!document.body.classList.contains("collapsed"));
 if (localStorage.getItem("oc_collapsed") === "1") applyCollapsed(true);
-
-/* ============ 主题 ============ */
-const darkToggle = $("darkToggle");
-function applyTheme(dark) {
-  document.body.classList.toggle("dark", dark);
-  darkToggle.checked = dark;
-  localStorage.setItem("oc_theme", dark ? "dark" : "light");
-}
-darkToggle.onchange = () => applyTheme(darkToggle.checked);
-if (localStorage.getItem("oc_theme") === "dark") applyTheme(true);
 

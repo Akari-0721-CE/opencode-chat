@@ -15,7 +15,16 @@
 </head>
 <body>
 <div id="bgLayer"></div>
+<canvas id="bgCanvas" class="bg-media"></canvas>
+<video id="bgVideo" class="bg-media" muted loop playsinline></video>
 <div id="bgOverlay"></div>
+<div id="ocBootHint" class="boot-hint" hidden>
+  <div class="boot-hint-spinner"></div>
+  <div class="boot-hint-main">
+    <div class="boot-hint-text" id="ocBootHintText">正在准备 opencode…</div>
+    <div class="boot-hint-bar" id="ocBootHintBar"><div class="boot-hint-fill" id="ocBootHintFill"></div></div>
+  </div>
+</div>
 <div id="app">
   <aside class="sidebar">
     <div class="sidebar-header">
@@ -34,10 +43,14 @@
     <div class="sessions-section">
       <div class="sessions-head">
         <span class="name" id="sessionsName">会话</span>
+        <button class="head-icon" id="trashOpen" title="最近删除" aria-label="最近删除"></button>
         <button class="new-session" id="newSession" disabled>
           <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
           新会话
         </button>
+      </div>
+      <div class="session-search">
+        <input type="text" id="sessionSearch" placeholder="搜索会话（跨助手）" autocomplete="off" aria-label="搜索会话（跨助手）">
       </div>
       <ul class="session-list" id="sessionList"></ul>
     </div>
@@ -68,7 +81,17 @@
           <circle id="ctxRingArc" cx="12" cy="12" r="9" fill="none" stroke="var(--accent)" stroke-width="3" stroke-linecap="round" transform="rotate(-90 12 12)" style="stroke-dasharray:56.55;stroke-dashoffset:56.55"></circle>
         </svg>
       </button>
-      <select class="model-select" id="modelSelect" title="选择模型"></select>
+      <select class="model-select" id="modelSelect" title="选择模型" hidden></select>
+      <div class="model-pick" id="modelPick">
+        <button type="button" class="model-pick-btn" id="modelPickBtn" title="选择模型">
+          <span class="model-pick-label" id="modelPickLabel">（默认模型）</span>
+          <svg class="model-pick-chev" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+        <div class="model-pop" id="modelPop" hidden>
+          <input type="text" class="model-search" id="modelSearch" placeholder="搜索模型 / 提供商…" autocomplete="off">
+          <div class="model-list" id="modelList"></div>
+        </div>
+      </div>
       <select class="variant-select" id="variantSelect" title="思考强度（reasoning effort）" hidden></select>
       <button class="icon-btn" id="searchBtn" title="搜索消息 (Ctrl+F)">
         <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg>
@@ -84,12 +107,20 @@
     </button>
     <div class="input-wrap">
       <div class="attachments" id="attachments"></div>
+      <div class="ocr-progress" id="ocrProgress" hidden>
+        <span class="spinner"></span>
+        <span class="ocr-progress-text" id="ocrProgressText">正在 OCR 识图…</span>
+        <span class="ocr-progress-bar"><i></i></span>
+      </div>
       <div class="input-bar">
         <button class="icon-btn attach" id="attachBtn" title="添加图片或文件" disabled>
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
         </button>
         <button class="icon-btn proxy" id="proxyBtn" title="对话托管">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="21" x2="14" y2="10"/><path d="M15 3.5l1.1 2.2 2.2 1.1-2.2 1.1L15 10.1l-1.1-2.2-2.2-1.1 2.2-1.1z"/></svg>
+        </button>
+        <button class="icon-btn ocr" id="ocrBtn" title="OCR 识图（附件 / 会话图片批量识别）">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><line x1="7" y1="9" x2="17" y2="9"/><line x1="7" y1="13" x2="17" y2="13"/><line x1="7" y1="17" x2="12" y2="17"/></svg>
         </button>
         <textarea id="input" placeholder="输入消息…（可拖入/粘贴图片或文件）" disabled></textarea>
         <button class="icon-btn stop" id="stop" disabled title="停止">
@@ -177,20 +208,52 @@
 <div class="modal-mask" id="settingsMask">
   <div class="modal">
     <h3>设置</h3>
+    <input type="text" class="settings-search" id="settingsSearch" placeholder="搜索设置项…（如 主题、OCR、翻译）" autocomplete="off" aria-label="搜索设置项">
+    <div class="settings-empty" id="settingsEmpty" hidden>没有匹配的设置项</div>
     <div class="setting">
-      <div class="setting-label"><span>暗色主题</span></div>
-      <label class="switch"><input type="checkbox" id="darkToggle"><span class="slider"></span></label>
+      <div class="setting-label"><span>外观</span></div>
+      <div class="seg" id="themeSeg" role="radiogroup" aria-label="外观模式">
+        <button type="button" class="seg-btn" data-mode="light" role="radio" aria-checked="false">亮色</button>
+        <button type="button" class="seg-btn" data-mode="dark" role="radio" aria-checked="false">暗色</button>
+        <button type="button" class="seg-btn" data-mode="auto" role="radio" aria-checked="false">跟随系统</button>
+      </div>
+      <div class="hint-inline">「跟随系统」会随 Windows 的浅色 / 深色设置自动切换；与主题色互不影响。</div>
     </div>
     <div class="setting">
-      <div class="setting-label"><span>背景图片</span></div>
-      <div class="setting-row">
-        <button class="icon-btn" id="bgBtn" title="选择背景图片">
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
-        </button>
-        <button class="icon-btn" id="bgClear" title="清除背景">
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-        </button>
+      <div class="setting-label"><span>语言</span></div>
+      <div class="seg" id="langSeg" role="radiogroup" aria-label="界面语言">
+        <button type="button" class="seg-btn" data-lang="zh" role="radio" aria-checked="false">中文</button>
+        <button type="button" class="seg-btn" data-lang="en" role="radio" aria-checked="false">English</button>
       </div>
+    </div>
+    <div class="setting">
+      <div class="setting-label"><span>主题色</span></div>
+      <div class="accent-picker" id="accentPicker"></div>
+    </div>
+    <div class="setting">
+      <div class="setting-label"><span>桌面通知</span></div>
+      <label class="switch"><input type="checkbox" id="notifyToggle"><span class="slider"></span></label>
+      <div class="hint-inline">窗口不在前台时，回复完成 / 需要授权 / 需要回答会弹出系统通知（需授权，可随时关闭）。</div>
+    </div>
+    <div class="setting">
+      <div class="setting-label"><span>背景</span></div>
+      <div class="setting-row">
+        <select class="setting-input" id="bgKind">
+          <option value="none">无背景</option>
+          <option value="image">本地图片</option>
+          <option value="video">本地视频</option>
+          <option value="aurora">动态 · 极光</option>
+          <option value="starfield">动态 · 星野</option>
+          <option value="particles">动态 · 粒子连线</option>
+          <option value="grid">动态 · 流光网格</option>
+        </select>
+      </div>
+      <div class="setting-row" style="margin-top:8px">
+        <button type="button" class="mini-link" id="bgPickImage">选择图片</button>
+        <button type="button" class="mini-link" id="bgPickVideo">选择视频</button>
+        <button type="button" class="mini-link" id="bgClear">清除背景</button>
+      </div>
+      <div class="hint-inline" id="bgHint">动态背景由本机绘制；「性能优先」档下动态背景静止以省资源。视频仅保存在本机 IndexedDB。</div>
     </div>
     <div class="setting">
       <div class="setting-label"><span>背景遮罩</span><span id="dimVal">0%</span></div>
@@ -211,6 +274,22 @@
     <div class="setting">
       <div class="setting-label"><span>显示 Token 计数</span></div>
       <label class="switch"><input type="checkbox" id="tokenToggle"><span class="slider"></span></label>
+    </div>
+    <div class="setting">
+      <div class="setting-label"><span>渲染质量</span><span id="qualityState" style="margin:0;font-size:11px;color:var(--accent)"></span></div>
+      <div class="seg" id="qualitySeg" role="radiogroup" aria-label="渲染质量">
+        <button type="button" class="seg-btn" data-quality="low" role="radio" aria-checked="false">性能优先</button>
+        <button type="button" class="seg-btn" data-quality="standard" role="radio" aria-checked="false">标准</button>
+        <button type="button" class="seg-btn" data-quality="high" role="radio" aria-checked="false">高质量</button>
+      </div>
+      <div class="hint-inline" id="qualityHint"></div>
+    </div>
+    <div class="setting">
+      <div class="setting-label">
+        <span>新手向导</span>
+        <button class="mini-link" id="onboardRerun">重新运行</button>
+      </div>
+      <div class="hint-inline">重新打开首次使用向导：连接模型服务商、创建默认助手与工作区。</div>
     </div>
     <div class="setting">
       <div class="setting-label">
@@ -251,10 +330,104 @@
       </div>
       <div class="setting">
         <div class="setting-label">
+          <span>翻译模型</span>
+          <button class="mini-link" id="trModelReset">重置</button>
+        </div>
+        <div class="model-pick" id="trModelPick">
+          <button type="button" class="model-pick-btn" id="trModelPickBtn" title="选择翻译模型">
+            <span class="model-pick-label" id="trModelPickLabel">（未设置）</span>
+            <svg class="model-pick-chev" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          <div class="model-pop inline" id="trModelPop" hidden>
+            <input type="text" class="model-search" id="trModelSearch" placeholder="搜索模型 / 提供商…" autocomplete="off">
+            <div class="model-list" id="trModelList"></div>
+          </div>
+        </div>
+        <div class="hint-inline">建议选便宜、快的模型；留空则用当前助手的模型。翻译通过临时会话在本机完成，不写入当前对话。</div>
+      </div>
+      <div class="setting">
+        <div class="setting-label">
+          <span>翻译提示词</span>
+          <button class="mini-link" id="trPromptReset">重置默认</button>
+        </div>
+        <textarea class="setting-input" id="trPrompt" rows="4" spellcheck="false"></textarea>
+      </div>
+      <div class="setting">
+        <div class="setting-label">
+          <span>翻译思考强度</span>
+          <button class="mini-link" id="trVariantReset">重置默认</button>
+        </div>
+        <select class="setting-input" id="trVariant"></select>
+        <div class="hint-inline">默认「非思考」以省成本；可选值取决于翻译模型是否支持。</div>
+      </div>
+      <div class="setting">
+        <div class="setting-label">
+          <span>OCR 模型</span>
+          <button class="mini-link" id="ocrModelReset">重置</button>
+        </div>
+        <div class="model-pick" id="ocrModelPick">
+          <button type="button" class="model-pick-btn" id="ocrModelPickBtn" title="选择 OCR 模型">
+            <span class="model-pick-label" id="ocrModelPickLabel">（未设置）</span>
+            <svg class="model-pick-chev" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          <div class="model-pop inline" id="ocrModelPop" hidden>
+            <input type="text" class="model-search" id="ocrModelSearch" placeholder="搜索模型 / 提供商…" autocomplete="off">
+            <div class="model-list" id="ocrModelList"></div>
+          </div>
+        </div>
+        <div class="hint-inline" id="ocrRecommend"></div>
+        <div class="hint-inline">优先选名称含「OCR」的专用模型；也可选任意视觉模型。识别通过临时会话在本机完成，不写入当前对话。个别专用模型在 opencode 下可能因 max_tokens / 上下文限制报错，此时改用视觉模型即可。</div>
+      </div>
+      <div class="setting">
+        <div class="setting-label">
+          <span>OCR 提示词</span>
+          <button class="mini-link" id="ocrPromptReset">重置默认</button>
+        </div>
+        <textarea class="setting-input" id="ocrPrompt" rows="4" spellcheck="false"></textarea>
+      </div>
+      <div class="setting">
+        <div class="setting-label">
+          <span>OCR 思考强度</span>
+          <button class="mini-link" id="ocrVariantReset">重置默认</button>
+        </div>
+        <select class="setting-input" id="ocrVariant"></select>
+        <div class="hint-inline">默认「非思考」以省成本；可选值取决于 OCR 模型是否支持。</div>
+      </div>
+      <div class="setting">
+        <div class="setting-label">
+          <span>数据备份</span>
+        </div>
+        <div class="setting-row">
+          <button type="button" class="mini-link" id="profileExport">导出 JSON</button>
+          <button type="button" class="mini-link" id="profileImport">导入 JSON</button>
+          <input type="file" id="profileFile" accept="application/json,.json" hidden>
+        </div>
+        <div class="hint-inline">助手 / 收藏 / 草稿 / 回复版本等仅存本地。已开启自动保存：改动会定期写入 <code>~/.config/opencode-chat/profile.json</code>；浏览器数据丢失时启动会自动恢复。</div>
+      </div>
+      <div class="setting">
+        <div class="setting-label">
+          <span>按助手清理记录</span>
+          <button class="mini-link" id="cleanupOpen">管理</button>
+        </div>
+        <div class="hint-inline">删除某个助手的全部会话记录（含本地草稿 / 收藏 / 最近记录），不影响其他助手。</div>
+      </div>
+      <div class="setting">
+        <div class="setting-label"><span>快捷键</span></div>
+        <div class="hint-inline">Enter 发送 · Ctrl+Enter 发送 · Shift+Enter 换行 · Alt+N 新会话 · Ctrl+F 搜索 · Ctrl+, 打开设置 · Esc 关闭弹窗（无弹窗时中止生成）。</div>
+      </div>
+      <div class="setting">
+        <div class="setting-label">
           <span>用量统计</span>
           <button class="mini-link" id="usageRefresh">刷新</button>
         </div>
         <div class="usage-stats" id="usageStats"></div>
+      </div>
+      <div class="setting">
+        <div class="setting-label">
+          <span>最近错误</span>
+          <button class="mini-link" id="errClear">清空</button>
+        </div>
+        <div class="err-log" id="errLog"></div>
       </div>
     </div>
   </div>
@@ -284,11 +457,11 @@
       </div>
     </div>
     <div class="field">
-      <label>所属文件夹</label>
+      <label>所属文件夹<span class="hint-inline">（仅用于侧栏分组管理，不影响对话）</span></label>
       <select id="astFolder"></select>
     </div>
     <div class="field">
-      <label>工作区目录</label>
+      <label>工作区目录<span class="hint-inline">（agent 在此目录读写文件，会话也按此目录归属；建议每个助手用独立目录）</span></label>
       <div class="input-with-btn">
         <input type="text" id="astDir" placeholder="C:\path\to\workspace">
         <button class="icon-btn" id="astBrowse" title="浏览目录">
@@ -298,11 +471,11 @@
     </div>
     <div class="field-row">
       <div class="field">
-        <label>默认 Agent</label>
+        <label>默认 Agent<span class="hint-inline">（opencode 的执行角色，一般保持默认）</span></label>
         <select id="astAgent"></select>
       </div>
       <div class="field">
-        <label>默认模型</label>
+        <label>默认模型<span class="hint-inline">（该助手默认使用的模型）</span></label>
         <select id="astModel"></select>
       </div>
     </div>
@@ -343,6 +516,12 @@
       <div class="switch-row">
         <span>Git 安全<span class="hint-inline">（开启后，agent 在 git commit/push 前会先列出改动、检查敏感内容并等你确认）</span></span>
         <label class="switch"><input type="checkbox" id="astGitSafe"><span class="slider"></span></label>
+      </div>
+    </div>
+    <div class="field">
+      <div class="switch-row">
+        <span>自动 OCR 图片<span class="hint-inline">（开启后发送图片时先 OCR，把文字发给模型、图片不发；图片仍在本机对话中保留显示，需在设置 → 高级配置 OCR 模型）</span></span>
+        <label class="switch"><input type="checkbox" id="astAutoOcr"><span class="slider"></span></label>
       </div>
     </div>
     <div class="field">
@@ -399,8 +578,14 @@
       <span>缩放</span>
       <input type="range" id="cropZoom" min="100" max="400" step="1" value="100">
     </div>
+    <div class="crop-batch" id="cropBatch" hidden>
+      <button type="button" class="mini-link" id="cropUseOriginal">用原图</button>
+      <button type="button" class="mini-link" id="cropAllOriginal">全部用原图</button>
+      <button type="button" class="mini-link" id="cropApplyRest">应用到其余</button>
+    </div>
     <div class="btn-row">
       <button class="btn-cancel" id="cropCancel">取消</button>
+      <button class="btn-allow" id="cropPrev" hidden>上一张</button>
       <button class="btn-allow" id="cropOk">裁剪</button>
     </div>
   </div>
@@ -457,6 +642,9 @@
         <button class="icon-btn" id="providerRefresh" title="刷新">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
         </button>
+        <button class="icon-btn" id="providerRestart" title="重启 opencode（使新密钥生效）">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+        </button>
         <button class="icon-btn" id="providerClose" title="关闭">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
@@ -473,6 +661,18 @@
     <h3 id="choiceTitle">选择</h3>
     <div class="choice-list" id="choiceList"></div>
     <div class="btn-row"><button class="btn-cancel" id="choiceCancel">取消</button></div>
+  </div>
+</div>
+
+<!-- 通用确认 -->
+<div class="modal-mask" id="confirmMask">
+  <div class="modal small">
+    <h3 id="confirmTitle">确认</h3>
+    <div class="confirm-text" id="confirmText"></div>
+    <div class="btn-row">
+      <button class="btn-cancel" id="confirmCancel">取消</button>
+      <button class="btn-allow" id="confirmOk">确定</button>
+    </div>
   </div>
 </div>
 
@@ -503,6 +703,41 @@
   </div>
 </div>
 
+<!-- OCR 识图 -->
+<div class="modal-mask" id="ocrMask">
+  <div class="modal ocr-modal">
+    <div class="search-head">
+      <h3>OCR 识图</h3>
+      <button class="icon-btn" id="ocrClose" title="关闭">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="ocr-hint" id="ocrHint">收集当前附件与当前会话中的图片；逐个识别，结果可编辑 / 复制 / 插入输入框。</div>
+    <div class="ocr-list" id="ocrList"></div>
+    <div class="btn-row">
+      <button class="mini-link" id="ocrInsert" type="button">插入到输入框</button>
+      <button class="mini-link" id="ocrCopyAll" type="button">复制全部</button>
+      <button class="btn-allow" id="ocrRunAll" type="button">识别全部</button>
+    </div>
+  </div>
+</div>
+
+<!-- 最近删除 -->
+<div class="modal-mask" id="trashMask">
+  <div class="modal">
+    <div class="fav-head">
+      <h3>最近删除</h3>
+      <div style="display:flex;gap:6px;align-items:center">
+        <button class="btn-reject trash-empty" id="trashEmpty">清空回收站</button>
+        <button class="icon-btn" id="trashClose" title="关闭">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+      </div>
+    </div>
+    <div class="fav-body" id="trashList"></div>
+  </div>
+</div>
+
 <!-- 收藏编辑 -->
 <div class="modal-mask" id="editorMask">
   <div class="modal">
@@ -511,6 +746,17 @@
     <div class="btn-row">
       <button class="btn-cancel" id="editorCancel">取消</button>
       <button class="btn-allow" id="editorOk">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 按助手清理记录 -->
+<div class="modal-mask" id="cleanupMask">
+  <div class="modal">
+    <h3>按助手清理记录</h3>
+    <div class="cleanup-list" id="cleanupList"></div>
+    <div class="btn-row">
+      <button class="btn-cancel" id="cleanupClose">关闭</button>
     </div>
   </div>
 </div>
@@ -530,6 +776,7 @@
 </div>
 
 <script src="/vendor/purify.min.js"></script>
+<script src="/js/i18n.js"></script>
 <script src="/js/core.js"></script>
 <script src="/js/profile.js"></script>
 <script src="/js/state.js"></script>
@@ -543,7 +790,10 @@
 <script src="/js/settings.js"></script>
 <script src="/js/media.js"></script>
 <script src="/js/providers.js"></script>
+<script src="/js/translate.js"></script>
+<script src="/js/ocr.js"></script>
 <script src="/js/favorites.js"></script>
+<script src="/js/onboarding.js"></script>
 <script src="/js/boot.js"></script>
 </body>
 </html>

@@ -1,4 +1,5 @@
 /* ============ 消息渲染 ============ */
+let renderMount = null;
 const MATH_RE = /(?:\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|\$(?:[^\s$][^$\n]*?[^\s$]|[^\s$])\$)/g;
 const CODE_TOKEN = (i) => "\uE000" + i + "\uE001";
 const MATH_TOKEN = (i) => "\uE002" + i + "\uE003";
@@ -103,6 +104,7 @@ function showPlaceholder(text) {
 }
 
 function appendNotice(text, isError) {
+  if (isError && typeof pushError === "function") pushError("notice", text);
   const wrap = document.createElement("div");
   wrap.className = "msg assistant";
   const role = document.createElement("div");
@@ -134,8 +136,26 @@ function renderMessageError(holder, info) {
   let box = wrap.querySelector(".msg-error");
   const txt = messageErrorText(info);
   if (!txt) { if (box) box.remove(); return; }
+  if (typeof pushError === "function") pushError("model", txt);
   if (!box) { box = el("div", "bubble notice error msg-error"); wrap.appendChild(box); }
   box.textContent = "模型调用失败：" + txt;
+  if (isAuthErrorText(txt) && !box.querySelector(".msg-error-action")) {
+    const b = el("button", "msg-action msg-error-action", "去服务商重连");
+    b.type = "button";
+    b.onclick = () => { if (typeof openProviderManager === "function") openProviderManager(); };
+    box.appendChild(b);
+  }
+}
+const AUTH_ERR_RE = /\[?(401|403)\]?|unauthorized|forbidden|invalid[\s_-]?api[\s_-]?key|api[\s_-]?key[^。\n]{0,12}(invalid|missing|expired|不存在|无效)|not authenticated|authentication|credentials?/i;
+function isAuthErrorText(txt) {
+  return AUTH_ERR_RE.test(String(txt || ""));
+}
+
+function markMsgEnter(wrap) {
+  if (typeof renderQuality !== "function" || renderQuality() !== "high") return;
+  if (document.body && document.body.classList && document.body.classList.contains("bulk-render")) return;
+  wrap.classList.add("msg-enter");
+  setTimeout(() => { try { wrap.classList.remove("msg-enter"); } catch (e) { /* ignore */ } }, 400);
 }
 
 function ensureMessageById(id) {
@@ -149,7 +169,8 @@ function ensureMessageById(id) {
   fillRole(role, "assistant");
   wrap.appendChild(role);
   attachMessageActions(wrap, "assistant");
-  messagesEl.appendChild(wrap);
+  markMsgEnter(wrap);
+  (renderMount || messagesEl).appendChild(wrap);
   msgEls[id] = { el: wrap, role: "assistant" };
   return msgEls[id];
 }
@@ -166,7 +187,8 @@ function ensureMessageEl(info) {
   fillRole(role, info.role);
   wrap.appendChild(role);
   attachMessageActions(wrap, info.role);
-  messagesEl.appendChild(wrap);
+  markMsgEnter(wrap);
+  (renderMount || messagesEl).appendChild(wrap);
   msgEls[id] = { el: wrap, role: info.role, info: info };
   return msgEls[id];
 }
@@ -179,6 +201,12 @@ function attachMessageActions(wrap, role) {
   copy.appendChild(document.createTextNode("复制"));
   copy.onclick = () => copyMessage(wrap, copy);
   actions.appendChild(copy);
+  const trBtn = el("button", "msg-action tr-btn");
+  trBtn.title = "翻译此消息";
+  trBtn.appendChild(iconEl("globe"));
+  trBtn.appendChild(document.createTextNode("翻译"));
+  trBtn.onclick = () => { if (typeof toggleTranslation === "function") toggleTranslation(wrap, trBtn); };
+  actions.appendChild(trBtn);
   const fav = el("button", "msg-action fav-btn");
   fav.title = "收藏此消息";
   fav.onclick = () => toggleMessageFavorite(wrap, fav);
@@ -323,6 +351,18 @@ function fmtDuration(part) {
   const ms = (tm.end || Date.now()) - tm.start;
   if (ms < 1000) return ms + "ms";
   return (ms / 1000).toFixed(1) + "s";
+}
+
+function updateRunningToolDurations() {
+  const now = Date.now();
+  document.querySelectorAll('.tool[data-status="running"]').forEach((t) => {
+    const p = t.__part;
+    if (!p) return;
+    const span = t.querySelector("summary .t-dur");
+    if (span) span.textContent = fmtDuration(p);
+    const tm = p.state && p.state.time;
+    if (tm && tm.start) t.classList.toggle("t-stuck", now - tm.start > 90000);
+  });
 }
 
 function toolCode(text) {
@@ -472,17 +512,33 @@ function updateTool(toolEl, part) {
   const body = toolEl.querySelector(".tool-body");
   const st = (part.state && part.state.status) || "";
   if (part.callID) { toolEl.dataset.call = part.callID; toolEl.__part = part; }
+  toolEl.dataset.status = st;
   summary.innerHTML = "";
-  summary.appendChild(el("span", "t-name", part.tool || "tool"));
+  const tInfo = (typeof toolInfo === "function") ? toolInfo(part.tool) : { name: part.tool || "tool", desc: "" };
+  const nameSpan = el("span", "t-name", tInfo.name || part.tool || "tool");
+  if (part.tool) nameSpan.title = part.tool + (tInfo.desc ? "：" + tInfo.desc : "");
+  summary.appendChild(nameSpan);
   const title = toolSummaryText(part);
   if (title) summary.appendChild(el("span", "t-title", title));
   const dur = fmtDuration(part);
-  if (dur) summary.appendChild(el("span", "t-dur", dur));
+  if (dur || st === "running") summary.appendChild(el("span", "t-dur", dur || ""));
   if (st) {
     const badge = document.createElement("span");
     badge.className = "status " + st;
     badge.textContent = st;
     summary.appendChild(badge);
+  }
+  if (st === "running") {
+    const abort = el("button", "t-abort", "中止");
+    abort.type = "button";
+    abort.title = "中止当前生成（结束本次回复）";
+    abort.onclick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (typeof stop === "function") stop();
+    };
+    summary.appendChild(abort);
+    if (typeof ensureDurationTicker === "function") ensureDurationTicker();
   }
   if ((st === "error" || st === "running") && toolEl.__lastStatus !== st) toolEl.open = true;
   toolEl.__lastStatus = st;
@@ -539,6 +595,7 @@ function renderMessage(info, parts) {
   }
   renderMessageError(holder, info);
   if (info.role === "assistant") setupVersionNav(holder, precedingUserText(holder.el));
+  if (info.role === "user" && typeof maybeAttachLocalOcrImages === "function") maybeAttachLocalOcrImages(holder);
   return holder;
 }
 function precedingUserText(wrap) {

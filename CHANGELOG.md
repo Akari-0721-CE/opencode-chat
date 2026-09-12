@@ -1,8 +1,395 @@
 # opencode 自建前端 · 版本说明
 
-- 版本：v0.1.41
+- 版本：v0.2.0
 - 日期：2026-09-12
-- 组成：Python 代理 + 多文件前端 + opencode 插件
+- 组成：Python 代理 + 多文件前端 + opencode 插件 + 发布工程
+
+## v0.2.0 变更（首个对外候选版本）
+
+- **里程碑**：将验收通过的 `v0.1.79` 定为 **`v0.2.0` 发布候选（对外便携版）**；功能代码与 0.1.79 相同（仅新增下方版本管理改进）。
+- **汇总 0.1.75–0.1.79 发布工程与关键修复**：
+  - 独立卸载脚本（不卸载系统 opencode/Node）；启动器安全升级与组件复用。
+  - 无 Node 自动获取 opencode：从 npm 源下载平台二进制（官方优先→npmmirror 回退，`shasum` 校验），解压到 `runtime\opencode\`。
+  - 端口占用自动回退：非本程序占用则换端口，本程序旧进程则结束升级，避免打开后 404。
+  - 连接服务商后自动重启 opencode 使加密密钥生效，修复「模型不显示」；服务商弹窗加手动重启按钮。
+  - 首次下载 opencode 的顶部可见进度条（准备/下载/校验/解压/启动/失败）。
+- **版本管理**：`rollback.bat` 快照范围扩展至 `release\`（`launcher.cs`/`launcher.py`/`build.ps1`/`uninstall.bat`/`uninstall.ps1`）与根 `README.md`，回滚更完整。
+- 生效方式：发布工程改动，需重新打包；源码运行不受影响。
+
+## v0.1.79 变更（首次下载 opencode 的可见进度）
+
+- **问题**：首次运行下载 opencode 组件（约 60–100MB）时，除开始时一次弹窗外界面无任何提示，用户会误以为「不能用」。
+- **进度提示**：启动器把下载/校验/解压状态写入 `%USERPROFILE%\.config\opencode-chat\opencode-install.json`（每 512KB 更新，含已下载/总大小）。`server.py` 新增 `GET /api/_opencode/status`（令牌保护）供前端轮询。
+- **界面顶部常驻提示条**：`#ocBootHint` 实时显示「正在准备 / 正在下载 opencode：x / y MB（进度条）/ 校验中 / 解压中 / npm 安装中 / 正在启动本地服务 / 准备失败」，就绪后自动隐藏并重新加载模型。
+- 覆盖状态：`preparing` / `downloading` / `verifying` / `extracting` / `installing-npm` / `ready` / `error`。
+- 文案已补中英对照；`node --check`、server 冒烟 8 项、前端 45 项全绿。
+- 生效方式：`server.py` 改动**需重启前端**；纯前端 Ctrl+F5。发布工程改动需重新打包。
+
+## v0.1.78 变更（修复：连接服务商后模型不显示）
+
+- **问题**：API Key 走「DPAPI 加密存 `~/.config/opencode-chat/secrets.json` + 插件在 opencode **启动时**注入 provider」的架构。保存 Key 后 opencode 仍用旧配置，因此模型列表看不到新 provider 的模型，**刷新也无效**；而启动器又会复用已运行的 opencode，重开程序依然不生效。
+- **修复**：`server.py` 新增 `POST /api/_opencode/restart`——结束 4096 上确认为 `opencode` 的进程（按进程名判定）并重新 `opencode serve`，使插件重新读取 `secrets.json`。前端保存服务商 Key 后**自动调用重启**，随后重新加载模型/服务商；事件流（SSE）由浏览器自动重连。
+- **手动入口**：服务商与模型弹窗右上角新增「重启 opencode」按钮（↻ 图标旁），用于 OAuth 或异常后手动重载。
+- 说明：重启会使正在进行的生成中断，属预期（换 Key 时）。OAuth 连接一般无需重启，但该入口同样可用于排障。
+- 测试：前端 `node --check` 全过；server 冒烟 8 项全绿。
+- 生效方式：`server.py` 改动**需重启本程序前端**（重开即可），前端 Ctrl+F5。
+
+## v0.1.77 变更（端口占用更稳健，修复打开后 404）
+
+- **端口占用自动回退**：前端端口（默认 8000）被**非本程序**占用时，启动器不再强行打开该端口（对方可能返回 404），而是**自动改用下一个空闲端口**（8000→8001…最多 20 个）并打开新界面。
+- **旧版本识别增强**：当 `/_version` 不可用（旧版服务无该接口）时，改用 `netstat -ano` 定位占用端口的 PID，再按进程映像路径判断是否为本程序；是本程序则结束并升级，否则回退端口。
+- **前端未就绪不再打开空白页**：仅当端口确实可访问时才打开窗口；否则弹窗提示并写日志，避免用户看到 404 / 连接失败。
+- 说明：本机 8000 上曾长期运行旧 `server.py`（无 `/_version`，请求返回 403），旧逻辑会误判并直接打开；新逻辑已覆盖此场景。
+- 生效方式：发布工程改动，需重新打包；源码运行不受影响。
+
+## v0.1.76 变更（无 Node 自动获取 opencode）
+
+- **取消 Node.js 依赖**：首次运行若本机没有 opencode，启动器改为**直接从 npm 源下载 opencode 的 Windows 运行组件**（`opencode-windows-x64` / `opencode-windows-arm64`，约 60–100MB），解压出 `opencode.exe` 到 `runtime\opencode\`。用户**无需安装 Node.js**。
+  - 下载源**官方优先、失败自动回退 npmmirror**；校验包 `shasum`（SHA-1）后再解压。
+  - 解压仅取其中的 `opencode.exe`，并写入版本标记 `runtime\opencode\VERSION`。
+  - 检测顺序：`runtime\opencode\` → 已安装的全局 opencode → `PATH`；已存在则复用、不重复下载。
+  - 失败时回退到 npm 安装（若本机有 Node.js），仍失败则提示检查网络。
+- **首次下载体验**：下载前弹窗提示体积与「请勿关闭」，日志记录进度（每 20MB）。
+- 卸载说明同步：随程序目录的 `runtime\opencode\` 随程序删除；不影响系统全局 opencode / Node.js。
+- 生效方式：发布工程改动，需重新打包；已装组件复用的逻辑不变。
+- 备注：本机网络 `github.com` 不可达而 npm 源可达，故采用 npm 源二进制而非 GitHub Release。
+
+## v0.1.75 变更（卸载功能 + 安全升级）
+
+- **独立卸载脚本**：新增 `release/uninstall.bat` + `release/uninstall.ps1`，随包打到产物根目录。双击后交互确认，可删除**程序目录**，并按选择删除**本软件用户数据**（`%USERPROFILE%\.config\opencode-chat\`）。
+  - 仅结束本安装目录内的进程（server.py 等）与本程序打开的 Edge 窗口，**不触碰 opencode 本体、Node.js 或全局组件**。
+  - 因脚本自拷贝到 `%TEMP%` 后再执行，安装目录无文件占用，可整目录删除。
+  - 本软件安装到 opencode 的插件**不随卸载删除**，脚本会给出提示路径。
+- **安全升级能力**（`release/launcher.py`）：启动时若 8000 端口上的服务版本与当前不一致，且确认是**本程序旧版本**（进程映像位于安装目录内），则自动结束旧进程并启动新版本，避免升级后仍连旧服务。
+- **组件复用**：opencode / Node 已存在则不重复安装；插件内容一致时不重复写入（`_copy_if_changed`）。
+- 打包：`release/build.ps1` 将卸载脚本复制到产物根目录；`README.md` 补充「卸载」「升级 / 更新」说明。
+- 生效方式：发布工程改动，需重新打包；源码运行不受影响。
+
+## v0.1.74 变更（补齐英文词条 + 动态自动翻译）
+
+- **新增 `tf()`**：支持带参数整句（`{0}` 占位），用于拼接串（如「加载更早消息（还有 N 条）」）。
+- **MutationObserver 自动翻译**：动态插入的界面文本 / `placeholder` / `title` / `aria-label` 自动按词表翻译；监听时**跳过**消息内容、代码块、会话标题、助手名等用户内容（并以 `_i18nApplying` 防止自触发循环）。
+- **词表补齐**：一次性补齐各模块动态文案（会话/回收站、消息操作、用量/上下文、服务商/OAuth、助手编辑、OCR、翻译、托管、附件裁剪、数据备份、权限/提问、搜索/收藏等）共新增约 200 条。
+- **关键拼接串**接入 `tf`：加载更早、清理记录、导入备份、附件超限、OCR 进度、模型选择、服务商连接等。
+- **会话时间/分组**（今天/昨天/日期、未命名/未归属）改为在渲染层经 `t()`（不改动受测纯函数）。
+- 测试：前端纯函数单测 **45** 项、server 冒烟 **8** 项全绿；`node --check` 全过；打包安全审计 99 项通过。
+- 生效方式：纯前端，**Ctrl+F5**。
+
+## v0.1.73 变更（多语言：中文 / English）
+
+- **i18n 框架**：新增 `js/i18n.js`。以中文原文为 key，`t()` 查英文表并回退中文；`translateDom()` 对静态界面做「文本 / 属性（placeholder / title / aria-label）」精确匹配翻译（自动跳过消息内容、代码块、会话标题、助手名等用户内容）；`setLang()` 持久化 `oc_lang`、切换 `<html lang>`、广播 `onLangChange`。
+- **语言选择**：设置新增「语言」分段控件（中文 / English）；首启向导第 1 步也提供语言切换；首次运行按系统语言（`navigator.language`）自动判定。
+- **翻译范围**：静态界面（侧栏 / 顶栏 / 设置全部标签与说明 / 各弹窗 / 助手编辑 / 裁剪 / 服务商 / OCR / 收藏 / 回收站 / 权限等）、渲染质量三档说明、`TOOL_INFO` 全部工具名与说明、首启向导全流程、服务商连接状态等。
+- **动态刷新**：切换语言后重渲染渲染质量说明、工具勾选、会话列表、助手栏等（`refreshI18nDynamic`）。
+- 测试：前端纯函数单测 **45** 项（新增 i18n `t()` 翻译/回退）、server 冒烟 **8** 项，全绿。
+- 生效方式：纯前端（新增 `js/i18n.js`，改 `index.html`/`boot.js`/`core.js`/`settings.js`/`onboarding.js`/`providers.js`/`app.css`），**Ctrl+F5**；重新打包见 `release/build.ps1`。
+
+## v0.1.72 变更（首启向导 + 内置默认助手 + 打包安全审计）
+
+- **首启向导（R5）**：新增 `js/onboarding.js`。新装首次进入时弹出三步向导：
+  1. 欢迎说明（本地运行、数据不出本机）；
+  2. 连接服务商：一键「连接 opencode Zen」（含免费模型）或打开服务商管理填自己的 Key，并实时显示已连接列表；
+  3. 就绪：展示默认助手/工作区/模型，提供「测试连接」（经临时会话发一条最小消息验证 Key 与连通性）与「完成」。
+  - 老用户（已有本地密钥 + 助手）自动跳过；设置 → 「新手向导 → 重新运行」可随时重开。
+- **内置默认助手（新装）**：`seedDefaultAssistant()` 首次创建「使用答疑助手」：专属工作区、`favorite`、`gitSafe`，默认用 opencode Zen 免费模型（Big Pickle / MiMo Free 等，自动择一），系统提示词为使用指南（连接模型 / 新建助手 / OCR / 翻译 / 渲染质量 / 快捷键），并**默认禁用破坏性工具**（bash/write/edit/apply_patch）。
+- **打包安全审计**：`release/build.ps1` 新增审计步骤——产物不得含 `secrets.json`/`profile.json`/`auth.json`/`.env`、`app-profile`/`node_modules`/`.git`/`backups`，文本文件不得含本机用户名或 `C:\Users\` 绝对路径；不通过即中止打包。实测 98 项全通过。
+- 测试：前端纯函数单测 **44** 项、server 冒烟 **8** 项全绿；`node --check` 全过。
+- 生效方式：纯前端改动（新增 `js/onboarding.js`、`boot.js`、`index.html`、`app.css`）+ `release/build.ps1`；**Ctrl+F5** 即可（打包脚本改动不影响运行态）。
+
+## v0.1.71 变更（发布工程：便携打包骨架）
+
+- **首个对外发布版准备**（便携 ZIP + 内置便携 Python）。详见 `TODO-RELEASE.md`。
+- **`server.py` 新增公开 `GET /api/_version`**：返回 `{ok, version, pid}`，供启动器判断「已在运行 / 旧进程 / 版本不符」。（需重启 server.py 生效。）
+- **新启动器**：`release/launcher.cs`（C#，无控制台，系统 `csc.exe` 编译）+ `release/launcher.py`（编排）：
+  - 安装/更新 opencode 插件到 `~/.config/opencode/plugins/`（官方自动加载目录，**免改 `opencode.jsonc`**；旧配置已注册 `base-override` 时更新旧 `plugin/` 以避免重复加载）。
+  - 启动/复用本地代理 `server.py`（用随包便携 Python，按 `/_version` 判定）。
+  - 检测 `opencode serve --port 4096`，缺失时自动 `npm install -g opencode-ai` 再启动；失败弹窗引导安装 Node.js。
+  - 用 Edge `--app` + 独立 `--user-data-dir` 打开应用；日志写 `~/.config/opencode-chat/logs/launcher.log`。
+- **打包脚本** `release/build.ps1`：组装 `dist/opencode-chat/`（app + 便携 Python + 启动器 + README）→ 下载 `python-3.13.7-embed-amd64` → `csc` 编译 → rcedit 盖 exe 版本 → 生成 `dist/opencode-chat-<版本>.zip`。
+- **文档**：新增根 `README.md`（安装 / 使用 / 常见问题 / 卸载 / 重新打包）。
+- **`.gitignore`**：忽略 `dist/` 与 `release/.cache/`。
+- 验证：便携 Python 运行 `server.py`，`GET /api/_version` 冒烟 OK；`csc` 编译与 rcedit 盖章 OK；`node --check`/`py_compile` OK；`tools\test.bat` 全绿。
+- 生效方式：`server.py` 改动**需重启**；其余为新增发布工程文件，不影响现有 dev 运行。
+
+## v0.1.70 变更（渲染质量滑块 + 背景升级 + 高质量动效）
+
+- **渲染质量三档**：设置新增「渲染质量」分段控件 `性能优先 / 标准 / 高质量`（`oc_render_quality`）。原「低性能模式」并入本档，旧 `oc_low_perf=1` 自动迁移为「性能优先」；`renderQuality()` / `setRenderQuality()` / `applyRenderQuality()` 取代旧开关。
+  - **性能优先**：关闭毛玻璃/界面动画/动态背景动画；长会话分批渲染、流式刷新合并（同原低性能模式）。
+  - **标准**：默认观感，动态背景正常播放。
+  - **高质量**：立体毛玻璃（多层内高光 + 深阴影 + 半透明描边）、悬停/入场动画、顶栏/侧栏流光、消息收发动效（批量渲染历史时不播放）。
+- **背景来源升级**：`背景` 设置改为下拉选择 `无 / 本地图片 / 本地视频 / 动态·极光 / 动态·星野 / 动态·粒子连线 / 动态·流光网格`。
+  - 动态预设由本机 `canvas` 绘制（`media.js`），不加载外部资源；「性能优先」档只画静态一帧。
+  - 本地视频存入 **IndexedDB**（`oc_bg_store/media`）持久化，刷新仍在；新增 `#bgVideo`/`#bgCanvas` 图层。
+  - 本地图片继续压到最大 1920×1080 JPEG 存 `localStorage`。
+- **CSP**：`server.py` 增加 `media-src 'self' blob:` 以允许本地视频背景（**需重启 server.py**；图片/动态预设仅 Ctrl+F5）。
+- 测试：前端纯函数单测 **44** 项（新增 `renderQuality` 迁移/优先级）、server 冒烟 **8** 项不变，全绿。
+- 生效方式：纯前端（`index.html`/`app.css`/`js/core.js`/`js/settings.js`/`js/media.js`/`js/sessions.js`）+ `server.py` CSP（重启）。**Ctrl+F5**。
+
+## v0.1.69 变更（助手弹窗排版整齐化）
+
+- **工具列表改网格**：助手 → 「工具」由 `flex-wrap` 改为两列 CSS Grid（`repeat(2, minmax(0,1fr))`，窄屏 ≤560px 退为单列），勾选、名称、说明按列对齐，不再因说明换行而错位。
+- **成对字段对齐**：`.field-row > .field` 改为列向 flex、其 `label` 撑满，使「默认 Agent / 默认模型」这类左标签行数不同的字段，下拉框底部对齐；字段内 `.hint-inline` 改为独立一行（11px 灰字），标签更清爽。
+- 生效方式：纯样式改动（`app.css`，未改 JS/HTML 结构），**Ctrl+F5** 即可。
+
+## v0.1.68 变更（工具说明 / 新手易用性）
+
+- **工具说明映射**：`core.js` 新增 `TOOL_INFO` 与 `toolInfo(id)`，为每个 opencode 工具提供中文名与一句话说明（bash 运行命令、read 读取文件、grep 搜索内容、question 向你提问等）。
+- **助手 → 工具列表**：工具栏勾选项由「裸 id」改为「中文名 + 灰色说明」，鼠标悬停显示 `id：说明`；未知名工具回退显示原名。
+- **对话内工具卡片**：工具块标题显示中文名，悬停显示 `原始 id：说明`，方便小白理解 agent 在做什么。
+- **助手表单补充说明**：所属文件夹、工作区目录、默认 Agent、默认模型均补了新手提示。
+- **兜底工具列表**：`providers.js` 拉取失败时的回退列表补上 `question`。
+- **顺带修复运行态问题**：`/_profile` 每 4s 报 404 经排查为 **8000 端口仍在跑 03:57 启动的旧 `server.py` 进程**（早于 13:20 的改动，缺 `/_profile` 路由），重启后 `POST /api/_profile` 返回 200、自动落盘恢复。（`server.py` 代码本身未改。）
+- 测试：前端纯函数单测 **43** 项（新增 `toolInfo`）、server 冒烟 **8** 项不变，全绿。
+- 生效方式：纯前端改动（`js/core.js`/`js/assistants.js`/`js/render.js`/`js/providers.js`/`index.html`/`app.css`），**Ctrl+F5** 即可。
+
+## v0.1.67 变更（低性能模式）
+
+- **新增设置项**：设置 → 「低性能模式」开关（`oc_low_perf`，随 `/_profile` 落盘）。为低配机 / 超长会话准备，兼顾核心功能不受影响，仅牺牲部分视觉效果。
+- **长会话按需渲染**：开启后单个会话**只先渲染最近 40 条**，顶部出现「加载更早消息（还有 N 条）」按钮，分批向上加载（每批 40 条，直接插入，不重排已有节点）；收藏跳转若目标在未渲染区会自动向上加载定位。
+- **关闭毛玻璃**：`body.low-perf` 下所有 `backdrop-filter` 置为 `none`（`--glass-blur` 不再生效）。
+- **关闭动画 / 过渡**：`body.low-perf` 下动画与过渡时长压到亚毫秒、只播放一次；侧栏、弹窗、开关、呼吸点等动效停用。
+- **合并流式刷新**：`events.js` 在低性能模式下把每个事件末尾的 `markLastAssistant` / `updateScrollBottom` 用 `requestAnimationFrame` 合并，降低流式输出时的主线程开销。
+- **设置提醒**：设置项内联说明「会影响什么 / 不影响什么」；标题右侧显示「已开启」状态；切换时弹 Toast 提示；切换后立即重渲染当前会话（生成进行中则延后到下次进入会话）。
+- **实现要点**：`core.js` 提供 `lowPerfEnabled` / `applyLowPerf` 并启动时应用；`render.js` 新增 `renderMount`（分段渲染到 `DocumentFragment` 再整体插入）；`sessions.js` 管理 `sessionMessages` / `sessionRenderStart`。
+- 测试：前端纯函数单测 **42** 项（新增 `lowPerfEnabled`）、server 冒烟 **8** 项不变，全绿。
+- 生效方式：纯前端改动（`index.html`/`app.css`/`js/core.js`/`js/render.js`/`js/state.js`/`js/sessions.js`/`js/events.js`/`js/settings.js`），**Ctrl+F5** 即可。
+
+## v0.1.66 变更（设置内搜索）
+
+- **搜索框**：设置弹窗标题下新增 `#settingsSearch`，按关键词过滤设置项（不区分大小写，空格分隔多词为「与」匹配）。
+- **覆盖高级设置**：搜索时自动展开「高级设置」并隐藏折叠按钮，清除后恢复原折叠状态（沿用 `oc_settings_more`）。
+- **匹配范围**：设置项自身文本 + 内部输入框的 placeholder / title / aria-label（如「翻译模型」「OCR 提示词」均可搜到）。
+- **空结果**：显示「没有匹配的设置项」提示。
+- 测试：前端纯函数单测 **41** 项（新增 `settingsQueryMatches`）、server 冒烟 **8** 项不变，全绿。
+- 生效方式：纯前端改动（`index.html`/`app.css`/`js/settings.js`），**Ctrl+F5** 即可。
+
+## v0.1.65 变更（自动 OCR 进度提示与动效）
+
+- **问题**：自动 OCR 期间发送按钮被禁用且无任何反馈，看上去像「卡死 / 无法发送」。
+- **进度提示**：输入框上方新增 `#ocrProgress`，OCR 时显示「正在 OCR 识图（n/总数）：文件名」，带旋转 spinner 与不确定进度条；`buildOcrSendParts` 增加逐张进度回调。
+- **发送按钮动效**：OCR 期间给发送按钮加 `ocr-working`（图标旋转 + 主题色 + `cursor: wait`），标题改为「正在 OCR 识图，请稍候…」，结束后恢复。
+- **状态一致性**：`updateSendState()` 纳入 `ocrSending`，OCR 期间即使用户改输入也不会误恢复发送按钮；发送逻辑完成/失败均走 `finally` 收尾提示与状态。
+- **无障碍**：`prefers-reduced-motion` 下降低动效速度。
+- 测试：前端纯函数单测 **40** 项、server 冒烟 **8** 项不变，全绿。
+- 生效方式：纯前端改动（`index.html`/`app.css`/`js/ocr.js`/`js/send.js`/`js/attachments.js`），**Ctrl+F5** 即可。
+
+## v0.1.64 变更（修复：开启自动 OCR 时图片被能力校验拒收）
+
+- **问题**：`addFiles` 会在添加附件时按 `modelSupports` 拦截图片；纯文本模型下开启「自动 OCR」后，图片在走到 OCR 之前就被拒收（提示「模型不支持图片输入」）。
+- **修复**：新增 `autoOcrEnabled()`；当前助手开启自动 OCR 时，`addFiles` 对**图片**跳过能力校验（图片会被 OCR 转成文字发送，不需要模型支持图片）。`send()` 的常规能力校验仍在自动 OCR 分支之后，PDF / 音频 / 视频等非图片仍按原逻辑校验。
+- 测试：前端纯函数单测 **40** 项、server 冒烟 **8** 项不变，全绿。
+- 生效方式：纯前端改动（`js/attachments.js`），**Ctrl+F5** 即可。
+
+## v0.1.63 变更（OCR：模型识图 + 批量识别 + 非视觉模型自动 OCR）
+
+- **新增 `static/js/ocr.js`**：用「临时会话」调用模型识别图片文字（复用翻译的 scratch 模式，用完即删，不写入当前对话）。
+- **设置（设置 → 高级）**：
+  - **OCR 模型**：可搜索 / 折叠提供商的模型选择器（复用 v0.1.58 浮层），**仅手动指定**。
+  - **优先专用模型**：自动检测名称 / id 含「OCR」的模型（如 `deepseek-ai/DeepSeek-OCR`、`PaddlePaddle/PaddleOCR-VL-1.5`）排在最前，一键选用；没有专用模型时推荐视觉模型（`capabilities.input.image` / `attachment`）。
+  - **OCR 提示词 / 思考强度**：可编辑、可重置（存 `oc_ocr_prompt` / `oc_ocr_variant`）。
+- **手动 + 批量 OCR 面板**（工具栏「OCR」按钮 / 附件图片上的「OCR」按钮）：收集**当前附件与当前会话中的图片**，逐张识别、显示进度，结果可编辑 / 单张复制 / 复制全部 / 插入输入框。
+- **自动 OCR（按助手开关，用户决定，不看能力标注）**：助手编辑里新增「自动 OCR 图片」。开启后发送带图片的消息时，先 OCR，把**文字**作为消息内容发给模型（图片不再作为图片发送），从而让纯文本模型也能「看图」；图片仍在本机聊天记录中保留显示。
+- **本地图片保留**：未发送的图片以对话文本为键存入**浏览器 IndexedDB**（不写入 localStorage / 备份，避免爆仓），用户消息渲染时自动把图片注入气泡（点击可放大），刷新 / 重开后仍在。
+- **接口**：发送走 `/session/{id}/prompt_async`，`parts` 为 `file`（data URL）+ 系统提示词，并禁用全部工具（避免函数调用报错）。
+- 已知：个别专用 OCR 模型在 opencode 下会因 `max_tokens (8192) > max_seq_len` 或上下文限制报错，改用视觉模型即可；已在设置提示中说明。
+- 测试：前端纯函数单测增至 **40** 项（新增 `isOcrModelName` / `isVisionModel` / `ocrDisplayKeyFromParts` 3 项）；server 冒烟 **8** 项不变，全绿。
+- 生效方式：纯前端改动（`index.html`/`app.css`/`js/*`/`test/*`），**Ctrl+F5** 即可。
+
+## v0.1.62 变更（会话列表修复：置顶弹窗 + 清空回收站）
+
+- **修复弹窗层级**：从「最近删除」中触发「彻底删除 / 清空」时，通用确认弹窗因与面板弹窗同为 `z-index:100` 且 DOM 靠前而被压在下层。现为 `#confirmMask` / `#choiceMask` / `#promptMask` 设 `z-index:300`，元弹窗始终浮于普通面板弹窗之上。
+- **修复 Escape / 焦点归属**：`visibleModalMask()` 改为按计算后的 `z-index`（并列时 DOM 顺序）选取最上层弹窗，避免多弹窗叠加时 Esc 关闭了被压在下面的面板。无 `getComputedStyle` 的测试环境回退为原「最后一个」行为。
+- **新增「清空回收站」**：回收站标题栏加红色「清空回收站」按钮（空时自动隐藏），确认后逐个 `DELETE /session/:id` 并清空 `S.trash`；失败计数提示。
+- 测试：前端纯函数单测 **37** 项、server 冒烟 **8** 项不变，全绿。
+- 生效方式：纯前端改动（`index.html`/`app.css`/`js/core.js`/`js/sessions.js`），**Ctrl+F5** 即可。
+
+## v0.1.61 变更（会话列表增强：时间 / 按天分组 / 跨助手搜索 / 最近删除）
+
+- **时间 + 按天分组**（`sessions.js`）：会话行右侧显示相对时间（今天 `HH:MM`、昨天、今年 `MM-DD`、跨年 `YYYY-MM-DD`），悬停显示操作时自动隐藏避免抖动；列表按更新时间倒序并按天插入分组标题（今天 / 昨天 / 具体日期）。纯函数 `sessionUpdated` / `sessionDayStart` / `sessionDayLabel` / `fmtSessionTime` / `groupSessionsByDay`。
+- **跨助手搜索**：会话面板新增搜索框，输入后拉取**全量会话**（`api("/session", { noDir: true })`，15s 缓存）并按「标题 / 目录 / 助手名 / 会话 id」过滤（纯函数 `filterSessions`），结果平铺显示并带助手徽标；点击结果自动切换到对应助手并打开该会话。
+- **删除后恢复（最近删除）**：删除会话改为**移入本地回收站**（`S.trash`，随 `/_profile` 落盘），弹出「撤销」Toast；会话面板新增回收站入口（`#trashOpen` → `#trashMask`），可**恢复**或**彻底删除**（`DELETE /session/:id`）。列表与搜索均过滤回收站项；`session.deleted` 事件与「按助手清理」会同步清理回收站记录。
+- **事件联动**：`session.updated` / `session.deleted` 改走 `refreshSessionList()`，搜索态下也能正确刷新。
+- 测试：前端纯函数单测增至 **37** 项（新增 5 项）；server 冒烟 **8** 项不变，全绿。
+- 生效方式：纯前端改动（`index.html`/`app.css`/`js/*`/`test/*`），**Ctrl+F5** 即可。
+
+## v0.1.60 变更（消息翻译：低cost模型 + 可配置提示词/思考强度）
+
+- **翻译功能**：每条消息（用户 / 助手）的操作区新增「翻译」按钮，点击后在消息下方生成译文块，可再次点击折叠 / 展开。译文用 Markdown 渲染（代码块保留）。
+- **低cost模型**：新增独立的「翻译模型」设置（默认留空 = 使用当前助手模型），通过**临时会话**（`translate-scratch`，用完即删）调用，不进当前对话、不污染上下文。翻译结果只在内存缓存（`Map`，键含提示词哈希），不写入本地存储 / 备份。
+- **高级设置可改 + 可重置**（设置 → 高级设置）：
+  - **翻译模型**：可搜索 / 折叠提供商的模型选择器（复用 v0.1.58 的浮层，本处内联展开），带「重置」。
+  - **翻译提示词**：可编辑 textarea，带「重置默认」；留空 / 等于默认即回退内置提示词。
+  - **翻译思考强度**：按所选模型的 `variants` 生成选项，默认「非思考」以省成本，带「重置默认」。
+  - 存 `oc_translate_model` / `oc_translate_prompt` / `oc_translate_variant`，随 v0.1.56 的自动落盘一起备份。
+- **修复**：`modelDisplayName` 之前用 `findModel(ref)` 但模型引用的字段是 `id` 而非 `modelID`，导致 v0.1.58 顶栏按钮显示的是模型 **id** 而非名称；现统一归一为 `modelID` 查询。
+- **实现**：新增 `static/js/translate.js`（设置项 + 翻译执行）；`providers.js` 抽出通用 `renderModelItems(box, q, current, onPick, emptyLabel, rerender)` 供顶栏与翻译模型两处复用；`core.js` 加 `globe` 图标；`render.js` 加翻译按钮。
+- 测试：前端纯函数单测 **32** 项、server 冒烟 **8** 项不变，全绿。
+- 生效方式：纯前端改动（`index.html`/`app.css`/`js/*`），**Ctrl+F5** 即可。
+
+## v0.1.59 变更（多图裁剪批量化）
+
+- **问题**：多选图片且开启裁剪时，`addFiles` 对每张图逐个弹出裁剪框，8 张就要确认 8 次，繁琐。
+- **裁剪队列**：裁剪器改为**队列**模式（`media.js`）。一次选择多张（>1）时标题显示「裁剪图片（2/8）」，底部新增工具栏：**用原图 / 全部用原图 / 应用到其余**，并支持**上一张**回退（每张的裁剪状态自动保存）。按钮文案随进度变为「裁剪并下一张 / 裁剪」。
+- **「应用到其余」**：用当前图片的比例与缩放（居中构图）自动裁剪剩余图片，一步完成。
+- **「用原图」**：跳过该张裁剪，按普通路径处理（仍受「图片自动压缩」影响）。
+- **取消**：结束本次裁剪，已确认的保留、未处理的跳过（与原单张行为一致）。
+- **兼容**：单张（头像裁剪等）仍走原交互，工具栏隐藏；`cropImageFile(file, opts)` 保留为 `cropBatch([file])` 的薄封装，`profile.js` 头像裁剪不受影响。加载多图时提示「正在加载 N 张图片…」。
+- **实现**：`attachments.js` 抽出 `buildAttachmentData`，`addFiles` 先收集全部文件、再对需要裁剪的图片调用一次 `cropBatch`，按原顺序合并结果（`{dataUrl}` 裁剪 / `{original}` 用原图 / `null` 跳过）。
+- 测试：本次为 DOM/Canvas 交互，无新增纯函数；前端单测 **32** 项、server 冒烟 **8** 项不变，全绿。
+- 生效方式：纯前端改动（`index.html`/`app.css`/`media.js`/`attachments.js`），**Ctrl+F5** 即可。
+
+## v0.1.58 变更（顶栏模型选择：搜索 + 折叠提供商）
+
+- **自定义模型选择器**：顶栏原生 `<select>`（provider 分组超过 200 个时难找）换成自定义控件 `#modelPick`——按钮显示当前模型名，点开是带**搜索框**的浮层列表；原生 `select` 保留但隐藏，继续作为状态载体，选择逻辑收敛到 `applyModelSelection(val)`。
+- **搜索**：按「提供商名 / 提供商 id / 模型名 / 模型 id」实时过滤；匹配到提供商时展开其全部模型，匹配到模型时只列匹配项。纯函数 `filterModelGroups(providers, q)` 抽离并补单测（provider 命中展开全部、model 命中精确、无命中返回空）。回车选首个、Esc 关闭、点击外部关闭。
+- **折叠提供商**：每个提供商是一个可点击分组头（显示名称 + 模型数 + 箭头），点击折叠 / 展开，状态存 `localStorage.oc_model_collapsed`（键为 provider id）并持久化；**搜索时忽略折叠**，直接展示命中结果。
+- **兼容**：`updateModelSelect` 同步隐藏原生 `select`、按钮文案与 `variant-select` / 上下文圆环；无助手时按钮禁用并显示「（无助手）」。助手编辑弹窗内的模型下拉不受影响。
+- 测试：前端纯函数单测增至 **32** 项；server 冒烟 8 项不变，全绿。
+- 生效方式：纯前端改动（`index.html`/`app.css`/`providers.js`），**Ctrl+F5** 即可。
+
+## v0.1.57 变更（快捷键 + 触屏/键盘可用性）
+
+> 窄屏适配（原 P1-7）经确认「基本没问题」，不做；本版改做交互可用性，尽量不改界面。
+
+- **快捷键扩展**（`core.js` `initShortcuts`，全部走 `defaultPrevented` 让位、不与既有处理冲突）：
+  - **Ctrl+,** 打开设置；**Alt+N** 新建会话；**Esc** 在无弹窗时**中止当前生成**（有弹窗仍由既有逻辑关闭弹窗）。
+  - 输入框：**Ctrl/Cmd+Enter** 发送；原 **Enter 发送 / Shift+Enter 换行** 保持不变。
+  - 既有 **Ctrl+F** 搜索保留。设置 → 高级设置新增「快捷键」说明（纯文本，不改布局）。
+- **触屏（`@media (hover: none)`，桌面视觉零变化）**：无悬停设备上**常显**树行 / 会话行的操作按钮与消息操作，并放大 `mini-btn` / `msg-action` 点按区，解决「触屏点不到 hover 才出现的按钮」。
+- **键盘可用性**：
+  - 树行 / 会话行加 `tabIndex`，**Enter / Space 激活**（内部按钮自身回车不受影响，`target !== node` 时才处理）；`:focus-within` 时展开隐藏的 `row-actions`，使删除 / 重命名等可被 Tab 到达；`:focus-visible` 显示焦点环。
+  - 全项目按钮的 `title` 自动同步为 `aria-label`（`syncAriaLabels`，静态 + 动态行均覆盖），补齐图标按钮的可访问名。
+- 说明：消息操作区原本就用 `opacity` 且已支持 `:focus-within`，键盘可达，无需改动。
+- 测试：本次为 DOM/CSS 交互改动，无新增纯函数；前端单测 **31** 项、server 冒烟 **8** 项不变，全绿。
+- 生效方式：纯前端改动（`index.html`/`app.css`/`js`），**Ctrl+F5** 即可。
+
+## v0.1.56 变更（数据自动落盘 + 按助手清理记录）
+
+- **本地数据自动保存（落盘 JSON）**：新增服务端 `/_profile`（`server.py`）——`GET` 读、`POST` 写，落到 `~/.config/opencode-chat/profile.json`（原子写：先 `.tmp` 再 `os.replace`），受既有 token／同源守护；文件只存 `oc_*` 前缀的 localStorage 键值（工作区、草稿、回复版本、外观、用户资料等），**不涉及任何 API Key**（Key 仍由服务端 DPAPI 管理）。
+- **前端自动备份**：`state.js` 新增 `snapshotLocalStorage` / `saveProfile` / `flushProfile` / `initProfileAutosave`。启动后每 **4s** 对比快照、有变化才 POST；`visibilitychange`（转后台）与 `beforeunload` 走 `navigator.sendBeacon` 立即落盘。`boot()` 时若 `localStorage` 无工作区（浏览器数据被清/换机），自动 `GET /_profile` 恢复，**不丢配置与草稿**。
+- **导出 / 导入**：设置 → 高级设置 → 数据备份，支持「导出 JSON」（下载 `opencode-chat-backup-*.json`）与「导入 JSON」（校验后写回并刷新）；纯函数 `applyProfileObject` 只接收 `oc_` 前缀字符串键，坏文件报错不写入。
+- **按助手清理记录**：设置 → 高级设置 → 「按助手清理记录」打开 `#cleanupMask`，列出各助手及其工作区，危险确认后删除该助手的全部 opencode 会话，并同步清理本地**草稿 / 收藏 / 最近打开（`S.last`）**；正在查看的会话被清则回到空态。不影响其他助手。
+- 测试：新增 server `/_profile` 往返用例（含 403 未授权），server 冒烟 **8** 项；前端纯函数单测增至 **31** 项（`applyProfileObject`）；全绿。
+- 生效方式：改动含 **`server.py`**，需**重启 `server.py`** 后 **Ctrl+F5**。
+
+## v0.1.55 变更（桌面通知）
+
+- **桌面通知开关**：设置新增「桌面通知」开关（`#notifyToggle`，存 `oc_notify`，默认关闭）。开启时按需调用 `Notification.requestPermission()`；未授权 / 环境不支持则提示并自动回退开关状态。用 `showToast` 反馈。
+- **触发时机**（`events.js`）：① 当前会话 `session.idle`（回复完成，带会话标题）；② `permission.asked`（带权限名与 pattern）；③ `question.asked`（带问题标题）。三处均调用 `notifyDesktop(title, body, tag)`。
+- **只在该弹才弹**：纯函数 `canNotify(hidden, enabled, permission)` 约束为 **已开启 + 权限 granted + `document.hidden`（窗口失焦）** 三者同时满足；`enable` 为存储开关、`hidden` 用 `document.hidden` 判断，避免在用户正看着窗口时打扰。点击通知会 `window.focus()` 并关闭。
+- 与既有设置一致：逻辑放 `core.js`（`notifyEnabled` / `canNotify` / `notifyDesktop`），开关放 `settings.js`；纯函数 `canNotify` 补单测。
+- 测试：前端纯函数单测增至 **30** 项；server 冒烟 7 项不变，全绿。
+- 生效方式：纯前端改动（`index.html`/`js`），**Ctrl+F5** 即可（首次开启需在浏览器弹窗中允许通知）。
+
+## v0.1.54 变更（跟随系统主题）
+
+- **外观模式改为独立三段选项**：设置 → 外观由原「暗色主题」开关改为 **亮色 / 暗色 / 跟随系统** 分段控件（`#themeSeg`），状态存既有键 `oc_theme`（`light` / `dark` / `auto`，旧的 `dark` / `light` 值向后兼容，默认 `light`）。
+- **跟随系统**：`matchMedia("(prefers-color-scheme: dark)")` 读取系统偏好，并监听 `change` 事件；仅在 `auto` 模式下随系统实时切换，`light` / `dark` 保持用户显式选择不受系统影响。逻辑集中在 `core.js`（`themeMode` / `isDarkMode` / `applyThemeMode` / `initThemeMode`），已从 `send.js` 移出原 `applyTheme`。
+- **避免冲突**：不做 `@media (prefers-color-scheme)` 的纯 CSS 覆盖（那会与手动浅/深色互相覆盖），统一由 JS 依据模式在 `<body>` 上增删 `dark`；与 v0.1.52 的**主题色**互不影响（强调色仍以 `documentElement` 内联变量覆盖）。同时给 `:root` / `body.dark` 补 `color-scheme`，让原生控件与滚动条随模式正确配色。
+- 测试：新增 `isDarkMode` 三态用例（含 `matchMedia` 桩），前端纯函数单测增至 **29** 项；server 冒烟 7 项不变，全绿。
+- 生效方式：纯前端改动（`index.html`/`app.css`/`js`），**Ctrl+F5** 即可。
+
+## v0.1.53 变更（体验 P0：不丢内容 / 统一弹窗 / 错误修复入口）
+
+- **发送失败不再丢内容**：原 `send()` 在 `postPrompt` 之前就清空输入框、草稿与附件，失败仅提示，内容全部丢失。现改为**成功后才清理**：失败时输入与附件原地保留（提示「内容已保留，可直接重试」）；成功时仅清除本次发送的那个文本（若等待期间用户又输入了内容则保留）与本次的附件（等待期间新加的附件不受影响）。`static/js/send.js`。
+- **统一弹窗，去掉原生 `alert/confirm`**：新增通用确认弹窗 `#confirmMask`（`core.js` `confirmDialog(opts)` 返回 Promise，支持标题/正文/确定文案/危险态，`role=dialog`+焦点陷阱+Esc 关闭已并入既有 `MODAL_ESC`）。全项目 **17 处**原生弹窗清零：
+  - 删除类（删文件夹 / 删助手 / 删会话 / 清除明文密钥）改用红色危险确认按钮；
+  - 校验与失败提示（助手名/工作区/温度/topP/系统提示词、新建·重命名·删除失败等）改用 `showToast(msg, true)`，进入既有「最近错误」面板。
+- **删除可撤销**：`showToast` 支持操作按钮（`showToast(msg, isError, { label, onClick })`，带按钮时展示 6s 且 `pointer-events:auto`）。删除**文件夹 / 助手**后弹「撤销」，可恢复列表、收藏态与当前激活项；删除会话属服务端不可逆操作，仅保留危险确认、不提供撤销。
+- **认证错误附修复入口**：`renderMessageError` 识别 401/403 / `unauthorized` / `forbidden` / API key 无效等认证类错误时，在错误气泡内追加「去服务商重连」按钮，一键打开 `#providerMask`。纯函数 `isAuthErrorText` 抽离并补单测（含 429、model not found 等反例）。
+- 测试：前端纯函数单测增至 **28** 项；server 冒烟 7 项不变，全绿。
+- 生效方式：纯前端改动（`index.html`/`app.css`/`js`），**Ctrl+F5** 即可。
+
+## v0.1.52 变更（主题色换皮）
+
+- **内置 8 套主题色**：设置 → 主题色新增一排圆形色板，点击即换。预设：青绿（默认）、海蓝、靛紫、樱粉、日落橙、绯红、青碧、石墨。选择存 `localStorage`（键 `oc_accent`），启动即恢复。
+- **实现**：`core.js` 新增 `ACCENT_PRESETS` / `accentPreset` / `hexToRgba` / `applyAccent`——把主色及其派生色（`--accent-soft` / `--accent-strong` / `--accent-bright` / `--accent-weak` / `--accent-glow` / `--focus` / `--user-bubble`）写到 `document.documentElement` 内联变量，并同步 `<meta name="theme-color">`；`settings.js` 渲染色板（`renderAccentPicker`）。
+- **CSS 去硬编码**：`body.dark` 不再声明强调色系变量（否则会盖掉换皮结果），改由 `:root` + 内联覆盖；`app.css` 里散落的 `#10a37f` / `#16e0b0` / `#14b891` / `rgba(16,163,127,…)` 统一改为 `var(--accent*)`（呼吸灯、hosting 动效、工具状态、选中态、拖拽遮罩、用户气泡渐变等）。
+- **配套**：色板样式（选中描边 + 勾选）；`hexToRgba` / `accentPreset` 补单测，前端纯函数单测增至 **27** 项；server 冒烟 7 项不变，全绿。
+- 生效方式：纯前端改动，**Ctrl+F5** 即可。更换主题色即时生效，无需刷新。
+
+## v0.1.51 变更（风格统一与美化）
+
+- **设计变量集中化**：`app.css` 的 `:root` / `body.dark` 新增一套统一令牌——圆角（`--r-xs/sm/md/lg/pill`）、毛玻璃模糊（`--glass-blur`）、悬浮底色（`--hover` / `--track`）、弹窗底色（`--modal-bg`）、阴影（`--shadow-sm/md/lg`）、焦点环（`--focus`）、过渡（`--t-fast`）与强调色变体（`--accent-strong` / `--accent-weak`）。主色保持青绿 `#10a37f`。
+- **弹窗改为暗色毛玻璃**：`.modal` 由不透明 `var(--bg)` 改为 `var(--modal-bg)` + `backdrop-filter: blur(var(--glass-blur)) saturate(1.2)`，配 `--r-lg` 圆角与 `--shadow-lg`；遮罩层加轻微模糊；弹出有 `modalIn` 微动效（`prefers-reduced-motion` 下关闭）。
+- **范围滑杆统一**：此前 `input[type=range]` 是浏览器默认蓝色，与主色冲突。现用 `-webkit-`/`-moz-` 轨道与滑块统一为「青绿已填充 + 中性未填充 + 白底青边圆钮」；`core.js` 新增 `syncRangeFill` / `initRangeFills`（`boot()` 调用，输入时以捕获监听更新 `--range-fill`）。
+- **开关 / 焦点 / 按钮统一**：`.switch` 关闭态改用 `--track` 并带边框，开启态青绿、键盘聚焦显示 `--focus` 环；表单输入/下拉/文本域聚焦统一为青边 + 焦点环；`.btn-allow/.btn-always/.btn-reject/.btn-cancel`、`.msg-action`、`.icon-btn` 等统一过渡与 `:active` 微下压，`focus-visible` 统一焦点环。
+- **质感细节**：侧栏/顶栏模糊提升为 `--glass-blur` 并加 `saturate`；助手气泡圆角与浅阴影、用户气泡改青绿渐变；工具块圆角、思考块右侧圆角；上下文浮层 / 托管浮层 / 回到底部 / Toast 统一毛玻璃底纹与阴影；`.row.active` / `.session-list li.active` 统一用 `--accent-weak`。
+- 说明：气泡未加逐条 `backdrop-filter`，避免超大会话重复合成造成卡顿（沿用 v0.1.42 的性能取向）。
+- 生效方式：纯前端改动，**Ctrl+F5** 即可。
+
+## v0.1.50 变更（缺陷修复）
+
+- **修复生成中「上下文」归零**：opencode 在助手消息开始生成时即创建该条消息，其 `tokens` 尚未上报（全为 0）；原 `latestAssistantInfo` 只按 `time.created` 取最新一条，于是每次生成新回复的瞬间，顶栏上下文圆环与「本会话用量」浮层的上下文都会掉到 `0 / <窗口>`，生成结束才恢复。现改为**优先取最近一条有实际用量的助手消息**（`pickLatestAssistant`），生成中沿用上一轮的上下文值，不再归零。
+- 逻辑抽成纯函数 `pickLatestAssistant` 并补单测（零 token 的在生成消息被忽略、全部为零时回退到最新一条），前端纯函数单测增至 **25** 项；server 冒烟 7 项不变，全绿。
+- 生效方式：纯前端改动，**Ctrl+F5** 即可。
+
+## v0.1.49 变更（可访问性）
+
+- **模态语义**：页面加载时给所有 `.modal` 统一补 `role="dialog"` 与 `aria-modal="true"`（`core.js` `initModalA11y`），屏幕阅读器可识别为对话框。
+- **Escape 关闭**：按 Esc 关闭「最上层」可见模态。实现上映射到各模态既有的关闭/取消控件（如 `astCancel`、`promptCancel`、`cropCancel`、`oauthCancel`…），从而照常触发其清理回调（草稿/裁剪/轮询等）；**权限确认 `permMask` 故意不允许 Esc 关闭**，避免误关导致未决策。
+- **Tab 焦点陷阱**：Tab/Shift+Tab 在打开的模态内循环；若焦点跑到模态外则拉回首个可聚焦元素。图片查看器与其自身 Esc、搜索框的方向键/Esc 行为保持原样。
+- 生效方式：纯前端改动，**Ctrl+F5** 即可。
+
+## v0.1.48 变更（可观测性）
+
+- **`server.py` 可选日志文件**：设置环境变量 `OC_LOG_FILE=<路径>` 时，启动横幅与每条请求日志（沿用 token 脱敏）以时间戳前缀**追加写入**该文件，同时仍输出到 stderr；`Server.handle_error` 也会记录非连接类异常。目录不存在时自动创建；未设置则行为不变。
+- **前端「最近错误」面板**：设置 → 高级设置新增「最近错误」，记录最近 **50** 条（`pushError`），来源包括 `api`（网络错误 / 非 2xx，含路径与状态码）、`toast`、`notice`、`model`（模型调用失败）、`js` / `promise`（`window` 的 `error` / `unhandledrejection`）；同来源同内容 3 秒内去重，面板可「清空」。用于事后定位（例如模型 401/403、API 404、脚本异常）。
+- 测试：新增 `pushError` 去重与容量上限用例，前端纯函数单测增至 **24** 项；server 冒烟 7 项不变，全绿。
+- 生效方式：重启 `server.py`（日志文件）+ **Ctrl+F5**（前端面板）。
+
+## v0.1.47 变更（测试保护网）
+
+- **前端纯函数单测**：`test/_dom.js` 用 Node 内最小 DOM 桩，按 `index.html` 的加载顺序把 14 个经典脚本拼成**单个脚本**执行（规避跨文件 `const` 作用域问题），把纯函数挂到 `globalThis.__pure`；`test/pure.test.js` 覆盖 23 项：`modelKey/parseModelKey`（含 `/` 的模型 ID）、发送时间戳往返、`D2` 工作区去重复用、mime/大小格式化、token/费用换算、搜索转义与高亮、代码段保护/还原、托管转录等。
+- **server 冒烟测试**：`test/test_server.py`（`unittest`，随机端口起 `Server`）7 项——index 200 + CSP/`nosniff`/`no-referrer` + 响应内无 `__OC_TOKEN`、无令牌 403、带 Cookie `/_mkdir` 200、`/_models` 404、白名单外 `/api/auth` 404、路径穿越 `/../server.py` 404、`woff2` 字体 MIME 正确。
+- **统一入口**：`tools/test.bat` 依次跑 `node --test` 与 `python -m unittest`（两者任一失败即非零退出）。
+- 说明：`rollback.bat` 的 preflight 仍只做语法检查（`node --check` + `py_compile`），不自动跑测试；发版前可手动运行 `tools\test.bat`。
+- 生效方式：仅新增测试与脚本，不影响运行；未改 `server.py`/前端，无需重启。
+
+## v0.1.46 变更（缺陷修复与死代码清理）
+
+- **`finalizeMarkdown` 兜底**：除 `session.idle` 外，`setBusy(false)` 也调用一次 `finalizeMarkdown()`，避免流因错误/中止未发 `idle` 时助手气泡停留在纯文本（Markdown 未渲染）。
+- **删除孤文件** `fireworks.html`（根目录、无引用、不在 `static/` 下不被服务）。
+- **删除 `server.py` 死代码**：`/api/_models` 路由与 `_models` 方法（前端从未调用；移除后请求按白名单走 `/api/_proxy` 并 404，已实测）。
+- **`usedDirs` 载入归一**：`state.js` `loadStore` 对持久化的 `usedDirs` 逐项 `normDir` 归一，兼容手工/旧数据。
+- **`rollback.bat` 回滚更彻底**：回滚时整目录替换 `static/`，顺带清理快照中不存在的额外文件（原实现只删 `js`/`css`，残留文件会留存）。
+- 验证（临时端口 8011）：index 200、Cookie-only `/api/path` 200、`/api/_models` 404；`py_compile` + 相关 `node --check` 通过。
+- 生效方式：重启 `server.py` + Ctrl+F5。
+
+## v0.1.45 变更（P2-b：bash 长任务可控性）
+
+- **问题定位**：用户遇到「简单 bash 跑六分钟、超时不触发、最后手动中止」。排查实测（opencode 1.18.30）：多例 bash 设 `timeout=60000/120000ms`，实际分别跑了 360s/385s，均以 `interrupted=true / Tool execution aborted` 结束（即人工中止，非超时）。
+- **根因**（读 opencode 内嵌实现）：bash 工具用 `raceAll([进程 exitCode → "exit"，abort → "abort"，sleep(timeout+100ms) → "timeout"])`，超时才执行 `kill`。命令若用 `Start-Process`/`Start-Job` 起了后台子进程，**直接进程很快退出使 `exitCode` 抢先胜出，timeout 分支永不触发**；而子进程仍占着 stdout/stderr，输出流 `D.all` 一直不结束，工具便永久停留在 `running`，直到用户中止。改重定向到文件也无法避免（实测如此）。**这属 opencode 在 Windows 上对后台子进程的处理缺陷，前端/插件无法根治**；普通长命令（不带后台子进程）的超时逻辑本身正常。
+- **缓解（本版落地）**：运行中的工具块
+  1. **每秒自走计时**（不再只在收到事件时才刷新）；
+  2. 显示**「中止」按钮**，一键 `abort` 当前回复，不必再干等；
+  3. 运行超过 90s 时高亮为红色（`t-stuck`，疑似后台进程占用输出未结束）。
+- **版本一致性**：`VERSION` 升至 `0.1.45`，`tools/release.bat` 重写 exe 为 `0.1.45.0`；`release.bat` 增加「CHANGELOG 是否含 `v<版本>`」漂移校验，`rollback.bat backup` 增加「快照标签是否与 `VERSION` 一致」校验（不一致仅告警）。
+- 生效方式：纯前端改动，**Ctrl+F5** 即可。后续如需根治，得避开 agent 使用 `Start-Process` 起后台进程，或等 opencode 修复（exitCode 胜出后仍应等待/清理子进程句柄）。
+
+## v0.1.44 变更（P1-c：版本单一来源 + 插件源码入库）
+
+- **版本单一来源 `VERSION`**：新增仓库根 `VERSION`（当前 `0.1.44`），作为版本号唯一真相；`opencode-chat.exe` 的 PE 版本信息由它驱动。
+- **`tools/release.bat`**：读取 `VERSION`，用 **rcedit**（缺失时自动从 electron/rcedit 下载 `rcedit-x64.exe`，下载失败则告警跳过）写入 `opencode-chat.exe` 的 `FileVersion` / `ProductVersion`（`X.Y.Z.0`）。已实测：`FileVersion=0.1.44.0  ProductVersion=0.1.44.0`。`rcedit-*.exe` 已加入 `.gitignore`。
+- **插件源码入库**：仓库新增 `plugin/base-override.ts` 为**源码真相**（此前仅安装态 `~/.config/opencode/plugin/` 存在）。新增根 `install-plugin.bat`：把仓库源码拷到安装目录，并校验 `~/.config/opencode/opencode.jsonc` 已注册 `./plugin/base-override.ts`（未注册时打印需补的配置）。
+- **`rollback.bat` 调整**：快照纳入 `VERSION`，插件改为从仓库 `plugin/` 快照；回滚时把 `base-override.ts` 同时恢复回仓库 `plugin/` 与安装态 `~/.config/opencode/plugin/`。旧快照（快照根为 `base-override.ts`）仍兼容恢复。
+- 生效方式：`release.bat` 改 exe 版本无需重启；`install-plugin.bat` 改动插件后需**重启 opencode**；`rollback.bat` 内容改动立即生效。
+
+## v0.1.43 变更（P2-a：依赖本地化 + CSP）
+
+- **前端依赖全部本地化，移除 CDN**：将 `marked@18.0.12`、`highlight.js@11.9.0`（js + `github-dark` 主题 css）、`katex@0.16.11`（js + css + 20 个 woff2 字体）下载到 `static/vendor/`，`core.js` 的 URL 由 `cdn.jsdelivr.net` 改为 `/vendor/*`。此前任一 CDN 被篡改即可读取页内令牌并调用本地 API 执行命令；DOMPurify 本地化只堵了 Markdown 注入，本版把第三方脚本面清空。KaTeX CSS 字体路径已随 `static/vendor/fonts/` 落地。
+- **收掉页内令牌（纯 Cookie 鉴权）**：`server.py` 不再向 `index.html` 注入 `window.__OC_TOKEN`，前端 `api()` 不再发送 `X-OC-Token` 头，完全依赖 v0.1.41 下发的 `HttpOnly; SameSite=Strict` Cookie；`_guard` 仍兼容 Header/query，便于排查。这也是 CSP 能禁内联脚本的前提。
+- **CSP + 安全响应头**：静态 HTML 响应新增 `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'`，并统一加 `X-Content-Type-Options: nosniff` 与 `Referrer-Policy: no-referrer`（静态与 JSON 接口）。非 `index.html` 预览页的「返回应用」内联脚本用**每次响应的 nonce** 放行，保持 Esc 返回可用。`server.py` 补 `.woff2/.woff/.ttf/.otf` MIME。
+- 验证（临时端口 8010，不影响运行中的 8000）：`/` 200 且 CSP 生效、响应内不再含 `__OC_TOKEN`；Cookie-only `/api/path` 200；`/vendor/marked.min.js` 200（`application/javascript` + nosniff）；`/vendor/fonts/KaTeX_Main-Regular.woff2` 200（`font/woff2`）。`node --check` ×15 + `server.py` `py_compile` 通过。
+- 生效方式：**重启 `server.py` 并 Ctrl+F5**（`server.py` 与前端均已改动；opencode 插件与本体无需重启）。
+
+## v0.1.42 变更（P1-b：性能与工作区）
+
+- **超大会话 idle 假死修复（增量 finalize）**：流式期间只把被触碰的消息 id 记入 `dirtyMsgIds`，`session.idle` 仅重渲这些消息的气泡，不再全量重渲整个会话。此前单消息可达 ~27.6 万 token、含数百 tool/patch 部件的 agent 会话，在 idle 全量重渲 + DOMPurify 净化时会导致页面假死。涉及 `state.js` / `events.js` / `sessions.js`。
+- **工作区目录不复用（D2）**：`S` 新增持久化 `usedDirs`（`loadStore` 用现存助手目录播种），新建/复制助手时写入、删除助手不回收；`uniqueWorkspace` 同时比对 `usedDirs`。修复删除助手后同名新建会落回旧目录并带回旧会话的问题。
+- **托管转录分页（P3）**：经实测确认 opencode `GET /session/{id}/message?limit=N` 返回**最新 N 条**（升序），`proxy.js` 组装托管转录时改用 `?limit=RP_PROXY_TRANSCRIPT_LIMIT`（40）取代全量拉取，避免为取最近 40 条而加载整段超大历史。
+- **托管临时会话清扫**：`runProxyStep` 开头也清扫一次 `hosting-scratch`，避免长会话内多次托管时残留累积。
+- 生效方式：纯前端改动，**Ctrl+F5** 即可（`server.py`、opencode 插件与本体无需重启）。已验证 15 个 JS `node --check` 通过。
 
 ## v0.1.41 变更（P1-a：代理收敛 + 令牌 Cookie）
 
@@ -279,7 +666,7 @@ python server.py
 http://127.0.0.1:8000
 ```
 
-代理环境变量：`OPENCODE_HOST` / `OPENCODE_PORT`（上游，默认 127.0.0.1:4096）、`FRONT_PORT`（默认 8000）。
+代理环境变量：`OPENCODE_HOST` / `OPENCODE_PORT`（上游，默认 127.0.0.1:4096）、`FRONT_PORT`（默认 8000）、`OC_PROXY_DRYRUN`（=1 时白名单仅记录不拦截）、`OC_LOG_FILE`（可选，请求日志追加写入的路径）。
 
 ## 文件结构
 
@@ -288,7 +675,7 @@ http://127.0.0.1:8000
 | `server.py` | 本地代理：`/api/*` 转发到 opencode；静态托管 `static/`（含 `.ico/.svg/.png/.webmanifest` MIME）；`/api/_models` 模型列表；`/api/_mkdir` 创建目录；给非 `index.html` 的 `.html` 注入「返回应用」浮层 |
 | `static/index.html` | 前端 HTML 骨架（外部引入 `/css/app.css` 与 `/js/*.js`），连接代理 |
 | `static/css/app.css` | 全部样式（由原单文件 `<style>` 拆出） |
-| `static/vendor/purify.min.js` | 本地 DOMPurify 3.1.6（Markdown 渲染 HTML 净化，防 XSS） |
+| `static/vendor/` | 本地前端依赖：`purify.min.js`（DOMPurify 3.1.6，Markdown HTML 净化）、`marked.min.js`、`highlight.min.js` + `highlight-github-dark.min.css`、`katex.min.js` + `katex.min.css` + `fonts/*.woff2`（v0.1.43 起全部本地化，无 CDN） |
 | `static/js/*.js` | 全部前端脚本（15 个经典脚本，按 `core`→…→`boot` 顺序加载；含 `proxy.js` 对话托管） |
 | `static/icon.svg` / `favicon.ico` / `favicon-16|32.png` / `icon-48/64/128/192/256/512.png` / `apple-touch-icon.png` / `manifest.webmanifest` | 五层渐变回字形层叠应用图标（`#0e8262`→`#16e0b0`）与 PWA 清单 |
 | `opencode-chat.exe` | .NET 启动器：检测 8000 端口，必要时 `python server.py`，再用 Edge `--app` 打开页面 |

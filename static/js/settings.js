@@ -42,10 +42,61 @@ $("userAvatarClear").onclick = () => {
 };
 renderUserBar();
 
+/* ============ 设置内搜索 ============ */
+function settingsQueryMatches(hay, query) {
+  const terms = String(query || "").trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (!terms.length) return true;
+  const text = String(hay || "").toLowerCase();
+  return terms.every((t) => text.includes(t));
+}
+const settingsSearchBox = $("settingsSearch");
+let settingsSearchItems = null;
+function settingsItemText(node) {
+  let s = node.textContent || "";
+  const extras = node.querySelectorAll ? node.querySelectorAll("[placeholder],[title],[aria-label]") : [];
+  for (const ex of extras) {
+    s += " " + (ex.getAttribute("placeholder") || "") +
+      " " + (ex.getAttribute("title") || "") +
+      " " + (ex.getAttribute("aria-label") || "");
+  }
+  return s;
+}
+function applySettingsFilter() {
+  if (!settingsSearchItems) {
+    const modal = settingsMask.querySelector(".modal");
+    settingsSearchItems = modal ? Array.from(modal.querySelectorAll(".setting")) : [];
+    for (const node of settingsSearchItems) node.__searchText = settingsItemText(node);
+  }
+  const q = settingsSearchBox ? settingsSearchBox.value : "";
+  const searching = !!String(q || "").trim();
+  if (typeof moreToggle !== "undefined" && moreToggle && moreBody) {
+    if (searching) {
+      moreToggle.style.display = "none";
+      moreBody.hidden = false;
+    } else {
+      moreToggle.style.display = "";
+      applyMore(localStorage.getItem("oc_settings_more") === "1");
+    }
+  }
+  let visible = 0;
+  for (const node of settingsSearchItems) {
+    const show = settingsQueryMatches(node.__searchText, q);
+    node.hidden = !show;
+    if (show) visible++;
+  }
+  const empty = $("settingsEmpty");
+  if (empty) empty.hidden = !(searching && visible === 0);
+}
+if (settingsSearchBox) settingsSearchBox.addEventListener("input", applySettingsFilter);
+
 $("settingsBtn").onclick = () => {
   settingsMask.classList.add("show");
+  if (typeof renderLangSeg === "function") renderLangSeg();
+  if (settingsSearchBox) { settingsSearchBox.value = ""; applySettingsFilter(); }
   refreshUsageStats();
+  if (typeof renderErrorLog === "function") renderErrorLog();
 };
+if ($("errClear")) $("errClear").onclick = () => { recentErrors.length = 0; renderErrorLog(); };
 settingsMask.addEventListener("click", (e) => {
   if (e.target === settingsMask) settingsMask.classList.remove("show");
 });
@@ -123,7 +174,9 @@ function tickDurations() {
       gt.style.display = "none";
     }
   }
-  if (!activeStart && durationTimer) { clearInterval(durationTimer); durationTimer = null; }
+  if (typeof updateRunningToolDurations === "function") updateRunningToolDurations();
+  const hasRunningTools = !!document.querySelector('.tool[data-status="running"]');
+  if (!activeStart && !hasRunningTools && durationTimer) { clearInterval(durationTimer); durationTimer = null; }
 }
 function ensureDurationTicker() {
   if (!durationTimer) durationTimer = setInterval(tickDurations, 100);
@@ -217,15 +270,21 @@ function refreshSessionTokens() {
 }
 const CTX_RING_R = 9;
 const CTX_RING_C = 2 * Math.PI * CTX_RING_R;
-function latestAssistantInfo() {
-  let best = null, bestT = 0;
-  for (const id in msgEls) {
-    const info = msgEls[id] && msgEls[id].info;
+function pickLatestAssistant(infos) {
+  let best = null, bestT = 0, fallback = null, fallbackT = 0;
+  for (const info of infos || []) {
     if (!info || info.role !== "assistant" || !info.tokens) continue;
     const t = (info.time && info.time.created) || 0;
+    if (!fallback || t >= fallbackT) { fallback = info; fallbackT = t; }
+    if (tokenTotal(info.tokens) <= 0) continue;
     if (!best || t >= bestT) { best = info; bestT = t; }
   }
-  return best;
+  return best || fallback;
+}
+function latestAssistantInfo() {
+  const infos = [];
+  for (const id in msgEls) infos.push(msgEls[id] && msgEls[id].info);
+  return pickLatestAssistant(infos);
 }
 function contextStats() {
   let input = 0, output = 0, reasoning = 0, cr = 0, cw = 0, cost = 0, any = false;
@@ -401,4 +460,195 @@ $("tokenToggle").onchange = (e) => {
 };
 $("usageRefresh").onclick = refreshUsageStats;
 applyTokenVisibility();
+
+/* ============ 主题色选择 ============ */
+function renderAccentPicker() {
+  const box = $("accentPicker");
+  if (!box) return;
+  const cur = localStorage.getItem("oc_accent") || "green";
+  box.innerHTML = "";
+  for (const p of ACCENT_PRESETS) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "accent-swatch" + (p.id === cur ? " on" : "");
+    b.style.background = p.accent;
+    b.title = p.name;
+    b.setAttribute("aria-label", p.name);
+    b.onclick = () => { applyAccent(p.id); renderAccentPicker(); };
+    box.appendChild(b);
+  }
+}
+renderAccentPicker();
+
+/* ============ 桌面通知开关 ============ */
+function notifySupported() { return typeof Notification !== "undefined"; }
+function applyNotifyToggle() {
+  const tg = $("notifyToggle");
+  if (!tg) return;
+  tg.checked = localStorage.getItem("oc_notify") === "1";
+  tg.disabled = !notifySupported();
+}
+async function setNotifyEnabled(on) {
+  if (!notifySupported()) { showToast("当前环境不支持桌面通知", true); return false; }
+  if (on) {
+    let perm = Notification.permission;
+    if (perm === "default") {
+      try { perm = await Notification.requestPermission(); } catch (e) { perm = "denied"; }
+    }
+    if (perm !== "granted") {
+      showToast("未获得通知权限，可在浏览器地址栏的权限设置中开启", true);
+      return false;
+    }
+  }
+  try { localStorage.setItem("oc_notify", on ? "1" : "0"); } catch (e) {}
+  return true;
+}
+if ($("notifyToggle")) {
+  $("notifyToggle").onchange = async (e) => {
+    const want = e.target.checked;
+    const ok = await setNotifyEnabled(want);
+    e.target.checked = want && ok;
+  };
+}
+applyNotifyToggle();
+
+/* ============ 数据备份（导出 / 导入） ============ */
+if ($("profileExport")) $("profileExport").onclick = () => {
+  try { exportProfile(); } catch (e) { showToast("导出失败：" + e.message, true); }
+};
+if ($("profileImport")) $("profileImport").onclick = () => $("profileFile").click();
+if ($("profileFile")) {
+  $("profileFile").onchange = async () => {
+    const f = $("profileFile").files && $("profileFile").files[0];
+    $("profileFile").value = "";
+    if (!f) return;
+    try {
+      const obj = JSON.parse(await f.text());
+      const n = applyProfileObject(obj);
+      showToast(typeof tf === "function" ? tf("已导入 {0} 项，即将刷新…", n) : ("已导入 " + n + " 项，即将刷新…"));
+      setTimeout(() => location.reload(), 600);
+    } catch (e) {
+      showToast("导入失败：" + e.message, true);
+    }
+  };
+}
+
+/* ============ 按助手清理记录 ============ */
+function renderCleanupList() {
+  const box = $("cleanupList");
+  if (!box) return;
+  box.innerHTML = "";
+  if (!S.assistants.length) { box.appendChild(el("div", "hint", "暂无助手")); return; }
+  for (const a of S.assistants) {
+    const row = el("div", "cleanup-row");
+    const info = el("div", "cleanup-info");
+    info.appendChild(el("div", "cleanup-name", a.name || "未命名"));
+    info.appendChild(el("div", "cleanup-dir", a.directory || "（未设置目录）"));
+    row.appendChild(info);
+    const b = el("button", "btn-reject cleanup-btn", "清理");
+    b.type = "button";
+    b.onclick = () => cleanupAssistantRecords(a);
+    row.appendChild(b);
+    box.appendChild(row);
+  }
+}
+async function cleanupAssistantRecords(a) {
+  if (!a) return;
+  const ok = await confirmDialog({
+    title: "清理记录",
+    text: "清理助手「" + a.name + "」的全部记录？\n将删除工作区 " + (a.directory || "?") + " 下的 opencode 会话，以及本地草稿 / 收藏 / 最近记录。此操作不可恢复。",
+    okText: "清理",
+    danger: true,
+  });
+  if (!ok) return;
+  let list = [];
+  if (a.directory) {
+    try { list = await api("/session", { directory: a.directory }); }
+    catch (e) { showToast("读取会话失败：" + e.message, true); return; }
+  }
+  list = Array.isArray(list) ? list : [];
+  const ids = new Set(list.map(s => s.id));
+  let failed = 0;
+  for (const s of list) {
+    try { await api("/session/" + s.id, { method: "DELETE", directory: a.directory }); }
+    catch (e) { failed++; }
+  }
+  const drafts = draftStore();
+  for (const id of ids) delete drafts[id];
+  try { localStorage.setItem(DRAFT_KEY, JSON.stringify(drafts)); } catch (e) {}
+  const reps = repliesStore();
+  for (const key of Object.keys(reps)) {
+    if (ids.has(key.split("|")[0])) delete reps[key];
+  }
+  saveReplies(reps);
+  S.favorites = S.favorites.filter(f => !(f.assistantId === a.id || ids.has(f.sessionId)));
+  if (S.last[a.id]) delete S.last[a.id];
+  if (Array.isArray(S.trash)) {
+    const target = normDir(a.directory);
+    S.trash = S.trash.filter(t => t.assistantId !== a.id && normDir(t.directory) !== target);
+  }
+  sessionsCache = sessionsCache.filter(s => !ids.has(s.id));
+  saveStore();
+  if (currentSession && ids.has(currentSession.id)) {
+    currentSession = null;
+    messagesEl.innerHTML = "";
+    input.disabled = true; sendBtn.disabled = true;
+    showPlaceholder("记录已清理，点击「新会话」开始");
+  }
+  renderTree();
+  refreshSessionList();
+  renderCleanupList();
+  const done = list.length - failed;
+  const tr = (s, ...a) => {
+    if (typeof tf === "function") return tf(s, ...a);
+    if (typeof t === "function") return t(s);
+    return s;
+  };
+  showToast(failed ? tr("已清理 {0} 个会话，{1} 个失败", done, failed) : tr("已清理 {0} 个会话", list.length), !!failed);
+}
+if ($("cleanupOpen")) $("cleanupOpen").onclick = () => { renderCleanupList(); $("cleanupMask").classList.add("show"); };
+if ($("cleanupClose")) $("cleanupClose").onclick = () => $("cleanupMask").classList.remove("show");
+if ($("cleanupMask")) $("cleanupMask").addEventListener("click", (e) => { if (e.target === $("cleanupMask")) $("cleanupMask").classList.remove("show"); });
+
+/* ============ 渲染质量 ============ */
+const QUALITY_HINTS = {
+  low: "关闭毛玻璃、界面动画与动态背景动画；长会话只先渲染最近消息（可点「加载更早」）。最省资源，不影响对话功能。",
+  standard: "默认观感：毛玻璃与基础动效，动态背景正常播放。",
+  high: "立体毛玻璃 + 悬停/入场动画 + 顶栏/侧栏流光 + 消息收发动效，最华丽；较耗性能，低配机建议用「标准」。",
+};
+function renderQualityUI() {
+  const q = typeof renderQuality === "function" ? renderQuality() : "standard";
+  const seg = $("qualitySeg");
+  if (seg) seg.querySelectorAll(".seg-btn").forEach((b) => {
+    const on = b.dataset.quality === q;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-checked", on ? "true" : "false");
+  });
+  const st = $("qualityState");
+  if (st) st.textContent = (typeof t === "function") ? t(q === "low" ? "性能优先" : q === "high" ? "高质量" : "标准") : (q === "low" ? "性能优先" : q === "high" ? "高质量" : "标准");
+  const hint = $("qualityHint");
+  if (hint) hint.textContent = (typeof t === "function") ? t(QUALITY_HINTS[q] || "") : (QUALITY_HINTS[q] || "");
+}
+function refreshI18nDynamic() {
+  renderQualityUI();
+  if (typeof renderToolChecks === "function") {
+    const a = (typeof activeAssistant === "function") ? activeAssistant() : null;
+    renderToolChecks(a ? a.disabledTools : []);
+  }
+  if (typeof refreshSessionList === "function") refreshSessionList();
+  if (typeof refreshAssistantChrome === "function") refreshAssistantChrome();
+  if (typeof updateModelSelect === "function") updateModelSelect();
+}
+if (typeof onLangChange === "function") onLangChange(refreshI18nDynamic);
+if ($("qualitySeg")) {
+  $("qualitySeg").addEventListener("click", (e) => {
+    const b = e.target && e.target.closest ? e.target.closest(".seg-btn") : null;
+    if (!b) return;
+    if (typeof setRenderQuality === "function") setRenderQuality(b.dataset.quality);
+    renderQualityUI();
+    showToast("渲染质量：" + (b.textContent || ""));
+  });
+}
+renderQualityUI();
+
 

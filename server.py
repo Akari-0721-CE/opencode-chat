@@ -7,7 +7,11 @@ import json
 import os
 import re
 import secrets as _secrets
+import shutil
+import subprocess
 import sys
+import threading
+import time
 import urllib.parse
 
 UPSTREAM_HOST = os.environ.get("OPENCODE_HOST", "127.0.0.1")
@@ -18,6 +22,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 SECRETS_DIR = os.path.join(os.path.expanduser("~"), ".config", "opencode-chat")
 SECRETS_FILE = os.path.join(SECRETS_DIR, "secrets.json")
+PROFILE_FILE = os.path.join(SECRETS_DIR, "profile.json")
 AUTH_FILE = os.path.join(os.path.expanduser("~"), ".local", "share", "opencode", "auth.json")
 ALLOWED_ORIGINS = {
     "http://127.0.0.1:%d" % LISTEN_PORT,
@@ -28,6 +33,29 @@ SESSION_TOKEN = _secrets.token_urlsafe(32)
 PROXY_DRYRUN = os.environ.get("OC_PROXY_DRYRUN", "").strip().lower() in ("1", "true", "yes")
 PROXY_ALLOW_EXACT = {"/config/providers", "/experimental/tool/ids", "/file", "/path", "/agent", "/event"}
 PROXY_ALLOW_PREFIX = ("/session", "/provider", "/question")
+
+LOG_FILE = os.environ.get("OC_LOG_FILE", "").strip()
+LOG_LOCK = threading.Lock()
+if LOG_FILE:
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(LOG_FILE)), exist_ok=True)
+    except Exception:
+        pass
+
+
+def write_log(text):
+    try:
+        sys.stderr.write(text)
+    except Exception:
+        pass
+    if not LOG_FILE:
+        return
+    try:
+        with LOG_LOCK:
+            with open(LOG_FILE, "a", encoding="utf-8") as f:
+                f.write("%s %s" % (time.strftime("%Y-%m-%d %H:%M:%S"), text))
+    except Exception:
+        pass
 
 
 class DATA_BLOB(ctypes.Structure):
@@ -117,15 +145,15 @@ def redact_secrets(value):
             redact_secrets(item)
 
 
-def inject_token(data):
-    if b"window.__OC_TOKEN=" in data:
+def inject_preview_backbar(data, rel, nonce):
+    if b"__oc_backbar" in data:
         return data
+    snippet = PREVIEW_BACKBAR.replace("<script>", '<script nonce="%s">' % nonce)
     try:
         text = data.decode("utf-8")
     except Exception:
         return data
-    snippet = "<script>window.__OC_TOKEN=%s;</script>" % json.dumps(SESSION_TOKEN)
-    m = re.search(r"<head[^>]*>", text, re.IGNORECASE) or re.search(r"<body[^>]*>", text, re.IGNORECASE)
+    m = re.search(r"<body[^>]*>", text, re.IGNORECASE) or re.search(r"<head[^>]*>", text, re.IGNORECASE)
     if m:
         i = m.end()
         text = text[:i] + snippet + text[i:]
@@ -134,28 +162,140 @@ def inject_token(data):
     return text.encode("utf-8")
 
 
-def inject_preview_backbar(data, rel):
-    if rel == "index.html":
-        return data
-    if b"__oc_backbar" in data:
-        return data
-    try:
-        text = data.decode("utf-8")
-    except Exception:
-        return data
-    m = re.search(r"<body[^>]*>", text, re.IGNORECASE) or re.search(r"<head[^>]*>", text, re.IGNORECASE)
-    if m:
-        i = m.end()
-        text = text[:i] + PREVIEW_BACKBAR + text[i:]
-    else:
-        text = PREVIEW_BACKBAR + text
-    return text.encode("utf-8")
-
-
 HOP_HEADERS = {
     "host", "content-length", "connection", "accept-encoding",
     "keep-alive", "transfer-encoding", "upgrade", "proxy-connection",
 }
+
+SECURITY_HEADERS = (
+    ("X-Content-Type-Options", "nosniff"),
+    ("Referrer-Policy", "no-referrer"),
+)
+CSP = (
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; connect-src 'self'; "
+    "object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+)
+
+OPENCODE_PORT = UPSTREAM_PORT
+CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+
+
+def find_opencode_exe():
+    env_exe = os.environ.get("OC_OPENCODE_EXE", "").strip()
+    candidates = []
+    if env_exe:
+        candidates.append(env_exe)
+    candidates.append(os.path.join(os.path.dirname(BASE_DIR), "runtime", "opencode", "opencode.exe"))
+    appdata = os.environ.get("APPDATA", "")
+    local = os.environ.get("LOCALAPPDATA", "")
+    if appdata:
+        candidates.append(os.path.join(appdata, "npm", "node_modules", "opencode-ai", "bin", "opencode.exe"))
+        candidates.append(os.path.join(appdata, "npm", "opencode.exe"))
+    if local:
+        candidates.append(os.path.join(local, "opencode", "opencode.exe"))
+    for c in candidates:
+        if c and os.path.isfile(c):
+            return c
+    return shutil.which("opencode")
+
+
+def port_open(port, host="127.0.0.1", timeout=0.4):
+    import socket
+    s = socket.socket()
+    s.settimeout(timeout)
+    try:
+        s.connect((host, port))
+        return True
+    except Exception:
+        return False
+    finally:
+        try:
+            s.close()
+        except Exception:
+            pass
+
+
+def port_owner_pid(port):
+    if os.name != "nt":
+        return None
+    try:
+        out = subprocess.run(
+            ["netstat", "-ano", "-p", "tcp"],
+            creationflags=CREATE_NO_WINDOW, capture_output=True, text=True, timeout=15,
+        ).stdout or ""
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) >= 5 and parts[0].upper() == "TCP" and parts[3].upper() == "LISTENING":
+                addr = parts[1]
+                if addr.endswith(":" + str(port)) and (
+                    addr.startswith("127.0.0.1") or addr.startswith("0.0.0.0")
+                ):
+                    try:
+                        return int(parts[4])
+                    except ValueError:
+                        return None
+    except Exception:
+        write_log("port_owner_pid error\n")
+    return None
+
+
+def pid_image_name(pid):
+    if os.name != "nt":
+        return ""
+    try:
+        out = subprocess.run(
+            ["tasklist", "/FI", "PID eq %d" % int(pid), "/FO", "CSV", "/NH"],
+            creationflags=CREATE_NO_WINDOW, capture_output=True, text=True, timeout=15,
+        ).stdout or ""
+        if out.startswith('"'):
+            return out.split('"')[1]
+    except Exception:
+        pass
+    return ""
+
+
+def restart_opencode():
+    """结束并重启 opencode serve，使插件重新读取 secrets.json（DPAPI 密钥）。"""
+    exe = find_opencode_exe()
+    if not exe:
+        return {"ok": False, "error": "未找到 opencode 可执行文件"}
+    killed = False
+    pid = port_owner_pid(OPENCODE_PORT)
+    if pid and "opencode" in pid_image_name(pid).lower():
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/F"],
+                creationflags=CREATE_NO_WINDOW,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30,
+            )
+            killed = True
+        except Exception:
+            pass
+    for _ in range(40):
+        if not port_open(OPENCODE_PORT):
+            break
+        time.sleep(0.25)
+    args = [exe, "serve", "--port", str(OPENCODE_PORT), "--hostname", "127.0.0.1"]
+    if exe.lower().endswith((".cmd", ".bat")):
+        args = ["cmd", "/c"] + args
+    try:
+        os.makedirs(SECRETS_DIR, exist_ok=True)
+        subprocess.Popen(
+            args, cwd=SECRETS_DIR, env=dict(os.environ),
+            creationflags=CREATE_NO_WINDOW,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except Exception as e:
+        return {"ok": False, "error": "启动 opencode 失败: %s" % e, "exe": exe, "killed": killed}
+    for _ in range(100):
+        if port_open(OPENCODE_PORT):
+            break
+        time.sleep(0.3)
+    if not port_open(OPENCODE_PORT):
+        return {"ok": False, "error": "等待 opencode 就绪超时", "exe": exe, "killed": killed}
+    return {"ok": True, "exe": exe, "killed": killed, "port": OPENCODE_PORT}
+
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -163,7 +303,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         msg = re.sub(r"token=[^&\s\"']+", "token=***", fmt % args)
-        sys.stderr.write("%s - [%s] %s\n" % (self.address_string(), self.command, msg))
+        write_log("%s - [%s] %s\n" % (self.address_string(), self.command, msg))
 
     def do_GET(self):
         self._route()
@@ -225,17 +365,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def _route(self):
         parsed = urllib.parse.urlsplit(self.path)
+        if parsed.path == "/api/_version":
+            self._version()
+            return
         if parsed.path == "/api" or parsed.path.startswith("/api/"):
             if not self._guard(parsed):
                 return
-        if parsed.path == "/api/_models":
-            self._models(parsed)
-        elif parsed.path == "/api/_mkdir":
+        if parsed.path == "/api/_mkdir":
             self._mkdir()
         elif parsed.path == "/api/_secret":
             self._secret(parsed)
         elif parsed.path == "/api/_secret/purge":
             self._secret_purge()
+        elif parsed.path == "/api/_profile":
+            self._profile()
+        elif parsed.path == "/api/_opencode/restart":
+            self._opencode_restart()
+        elif parsed.path == "/api/_opencode/status":
+            self._opencode_status()
         elif parsed.path == "/api" or parsed.path.startswith("/api/"):
             self._proxy(parsed)
         else:
@@ -244,6 +391,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def _json(self, obj, status=200):
         data = json.dumps(obj).encode("utf-8")
         self.send_response(status)
+        for k, v in SECURITY_HEADERS:
+            self.send_header(k, v)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
@@ -325,6 +474,63 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         self._json({"ok": True, "removed": removed})
 
+    def _profile(self):
+        try:
+            if self.command == "GET":
+                data = {}
+                if os.path.isfile(PROFILE_FILE):
+                    with open(PROFILE_FILE, "r", encoding="utf-8") as f:
+                        loaded = json.load(f)
+                    if isinstance(loaded, dict):
+                        data = loaded
+                self._json({"ok": True, "data": data})
+                return
+            if self.command == "POST":
+                req = json.loads(self._read_body().decode("utf-8") or "{}")
+                data = req.get("data")
+                if not isinstance(data, dict):
+                    raise ValueError("data must be an object")
+                os.makedirs(SECRETS_DIR, exist_ok=True)
+                tmp = PROFILE_FILE + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False)
+                os.replace(tmp, PROFILE_FILE)
+                self._json({"ok": True, "keys": len(data)})
+                return
+            self.send_error(405, "method not allowed")
+        except Exception as e:
+            self.send_error(400, "profile error: %s" % e)
+
+    def _version(self):
+        ver = ""
+        try:
+            with open(os.path.join(BASE_DIR, "VERSION"), "r", encoding="utf-8") as f:
+                ver = f.read().strip()
+        except Exception:
+            pass
+        self._json({"ok": True, "version": ver, "pid": os.getpid()})
+
+    def _opencode_restart(self):
+        if self.command != "POST":
+            self.send_error(405, "method not allowed")
+            return
+        result = restart_opencode()
+        self._json(result, 200 if result.get("ok") else 500)
+
+    def _opencode_status(self):
+        data = {}
+        try:
+            with open(os.path.join(SECRETS_DIR, "opencode-install.json"), "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                data = loaded
+        except Exception:
+            data = {}
+        ready = port_open(UPSTREAM_PORT)
+        data["upstream_ready"] = ready
+        data["installed"] = True if ready else bool(find_opencode_exe())
+        self._json({"ok": True, "status": data})
+
     def _mkdir(self):
         try:
             raw = self._read_body()
@@ -339,36 +545,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         data = json.dumps({"ok": True, "path": path}).encode("utf-8")
         self.send_response(200)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
-
-    def _models(self, parsed):
-        try:
-            conn = http.client.HTTPConnection(UPSTREAM_HOST, UPSTREAM_PORT, timeout=30)
-            conn.request("GET", "/config/providers")
-            resp = conn.getresponse()
-            raw = resp.read()
-            conn.close()
-            cfg = json.loads(raw.decode("utf-8"))
-        except Exception as e:
-            self.send_error(502, "upstream error: %s" % e)
-            return
-        out = []
-        for prov in cfg.get("providers", []):
-            models = []
-            for mid, m in (prov.get("models") or {}).items():
-                models.append({
-                    "id": m.get("id", mid),
-                    "providerID": m.get("providerID", prov.get("id")),
-                    "name": m.get("name", mid),
-                    "capabilities": m.get("capabilities") or {},
-                    "variants": list((m.get("variants") or {}).keys()),
-                })
-            out.append({"id": prov.get("id"), "name": prov.get("name", prov.get("id")), "models": models})
-        data = json.dumps(out).encode("utf-8")
-        self.send_response(200)
+        for k, v in SECURITY_HEADERS:
+            self.send_header(k, v)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
@@ -480,15 +658,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
             ".ico": "image/x-icon",
             ".json": "application/json",
             ".webmanifest": "application/manifest+json",
+            ".woff2": "font/woff2",
+            ".woff": "font/woff",
+            ".ttf": "font/ttf",
+            ".otf": "font/otf",
         }.get(ext, "application/octet-stream")
         with open(filepath, "rb") as f:
             data = f.read()
-        if ext == ".html":
-            if rel == "index.html":
-                data = inject_token(data)
-            else:
-                data = inject_preview_backbar(data, rel)
+        csp = CSP
+        if ext == ".html" and rel != "index.html":
+            nonce = _secrets.token_urlsafe(16)
+            data = inject_preview_backbar(data, rel, nonce)
+            csp = CSP.replace("script-src 'self'", "script-src 'self' 'nonce-%s'" % nonce)
         self.send_response(200)
+        for k, v in SECURITY_HEADERS:
+            self.send_header(k, v)
+        if ext == ".html":
+            self.send_header("Content-Security-Policy", csp)
         self.send_header("Content-Type", ctype + "; charset=utf-8")
         if ext == ".html" and rel == "index.html":
             self.send_header("Set-Cookie", "oc_token=%s; HttpOnly; SameSite=Strict; Path=/" % SESSION_TOKEN)
@@ -506,12 +692,16 @@ class Server(http.server.ThreadingHTTPServer):
         exc = sys.exc_info()[1]
         if isinstance(exc, (ConnectionAbortedError, ConnectionResetError, BrokenPipeError)):
             return
+        write_log("server error: %r\n" % (exc,))
         super().handle_error(request, client_address)
 
 
 def main():
     server = Server((LISTEN_HOST, LISTEN_PORT), Handler)
-    print("proxy on http://%s:%d -> http://%s:%d" % (LISTEN_HOST, LISTEN_PORT, UPSTREAM_HOST, UPSTREAM_PORT))
+    write_log("proxy on http://%s:%d -> http://%s:%d%s\n" % (
+        LISTEN_HOST, LISTEN_PORT, UPSTREAM_HOST, UPSTREAM_PORT,
+        ("  (log: %s)" % LOG_FILE) if LOG_FILE else "",
+    ))
     try:
         server.serve_forever()
     except KeyboardInterrupt:
