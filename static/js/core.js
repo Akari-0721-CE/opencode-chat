@@ -78,10 +78,16 @@ const variantSelect = $("variantSelect");
 const sessionsName = $("sessionsName");
 const newSessionBtn = $("newSession");
 const attachBtn = $("attachBtn");
+const cameraBtn = $("cameraBtn");
+const cameraInput = $("cameraInput");
 const fileInput = $("fileInput");
 const attachmentsEl = $("attachments");
 const dropOverlay = $("dropOverlay");
 const toastEl = $("toast");
+function setAttachDisabled(on) {
+  if (attachBtn) attachBtn.disabled = !!on;
+  if (cameraBtn) cameraBtn.disabled = !!on;
+}
 
 const MARKED_URL = "/vendor/marked.min.js";
 const BASE_OVERRIDE_MARK = "[[OC_BASE_OVERRIDE]]";
@@ -255,8 +261,10 @@ const MODAL_ESC = {
   provKeyMask: "provKeyCancel",
   dirMask: "dirCancel",
   searchMask: "searchClose",
+  outlineMask: "outlineClose",
   ocrMask: "ocrClose",
   providerMask: "providerClose",
+  localMask: "localClose",
   choiceMask: "choiceCancel",
   confirmMask: "confirmCancel",
   cleanupMask: "cleanupClose",
@@ -264,6 +272,10 @@ const MODAL_ESC = {
   favMask: "favClose",
   trashMask: "trashClose",
   editorMask: "editorCancel",
+  mobileMoreMask: "mmClose",
+  filesMask: "filesClose",
+  fileViewMask: "fileViewClose",
+  mediaMask: "mediaClose",
   permMask: undefined,
 };
 function visibleModalMask() {
@@ -508,7 +520,7 @@ function initShortcuts() {
     if (mod && !e.altKey && e.key === ",") {
       e.preventDefault();
       const b = $("settingsBtn");
-      if (b) b.click();
+      if (b && !(typeof isRemote === "function" && isRemote())) b.click();
       return;
     }
     if (e.altKey && !mod && !e.shiftKey && (e.key === "n" || e.key === "N")) {

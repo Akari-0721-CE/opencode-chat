@@ -86,13 +86,74 @@ test("uniqueWorkspace avoids used dirs (D2 no-reuse)", () => {
   }
 });
 
-test("classify maps mime to kind", () => {
-  assert.strictEqual(P.classify("image/png"), "image");
+test("workspaceTarget picks unique folders under a base", () => {
+  const used = new Set();
+  assert.strictEqual(P.workspaceTarget("D:\\ws", "my/asst", used), "D:\\ws\\my-asst");
+  used.add(P.normDir("D:\\ws\\my-asst"));
+  assert.strictEqual(P.workspaceTarget("D:\\ws", "my/asst", used), "D:\\ws\\my-asst-2");
+  assert.strictEqual(P.workspaceTarget("", "x", used), "");
+});
+
+test("dirUnderBase only matches strict children", () => {
+  assert.strictEqual(P.dirUnderBase("C:\\ws\\a", "C:\\ws"), true);
+  assert.strictEqual(P.dirUnderBase("C:\\ws\\a\\b", "C:\\ws"), true);
+  assert.strictEqual(P.dirUnderBase("C:/ws/a/", "C:\\ws"), true);
+  assert.strictEqual(P.dirUnderBase("C:\\ws", "C:\\ws"), false);
+  assert.strictEqual(P.dirUnderBase("C:\\wsz\\a", "C:\\ws"), false);
+  assert.strictEqual(P.dirUnderBase("", "C:\\ws"), false);
+  assert.strictEqual(P.dirUnderBase("C:\\ws\\a", ""), false);
+});
+
+test("classify maps mime to kind", () => {  assert.strictEqual(P.classify("image/png"), "image");
   assert.strictEqual(P.classify("application/pdf"), "pdf");
   assert.strictEqual(P.classify("audio/mpeg"), "audio");
   assert.strictEqual(P.classify("video/mp4"), "video");
   assert.strictEqual(P.classify("text/plain"), "text");
   assert.strictEqual(P.classify(""), "text");
+});
+
+test("isTextLike detects text-ish files by mime or extension", () => {
+  assert.strictEqual(P.isTextLike("text/plain", "a.txt"), true);
+  assert.strictEqual(P.isTextLike("application/json", "a.json"), true);
+  assert.strictEqual(P.isTextLike("application/json; charset=utf-8", "a.json"), true);
+  assert.strictEqual(P.isTextLike("", "config.json"), true);
+  assert.strictEqual(P.isTextLike("", "notes.md"), true);
+  assert.strictEqual(P.isTextLike("application/octet-stream", "data.bin"), false);
+  assert.strictEqual(P.isTextLike("", "archive.zip"), false);
+  assert.strictEqual(P.isTextLike("image/svg+xml", "logo.svg"), false);
+});
+
+test("sendMimeFor normalizes text files to text/plain only", () => {
+  assert.strictEqual(P.sendMimeFor("application/json", "a.json"), "text/plain");
+  assert.strictEqual(P.sendMimeFor("", "a.csv"), "text/plain");
+  assert.strictEqual(P.sendMimeFor("image/png", "a.png"), "image/png");
+  assert.strictEqual(P.sendMimeFor("application/pdf", "a.pdf"), "application/pdf");
+  assert.strictEqual(P.sendMimeFor("", "a.zip"), "application/octet-stream");
+});
+
+test("sendSignature ignores data payload, keys on name/size/length", () => {
+  const a = [{ name: "x.json", size: 10, dataUrl: "data:a" }];
+  const b = [{ name: "x.json", size: 10, dataUrl: "data:b" }];
+  assert.strictEqual(P.sendSignature("hi", a), P.sendSignature("hi", b));
+  assert.notStrictEqual(P.sendSignature("hi", a), P.sendSignature("ho", a));
+});
+
+test("partVisible / messageVisible filter compaction and synthetic", () => {
+  assert.strictEqual(P.partVisible({ type: "compaction" }), false);
+  assert.strictEqual(P.partVisible({ type: "text", synthetic: true, text: "x" }), false);
+  assert.strictEqual(P.partVisible({ type: "text", text: "  " }), false);
+  assert.strictEqual(P.partVisible({ type: "text", text: "hi" }), true);
+  assert.strictEqual(P.partVisible({ type: "file", url: "data:x" }), true);
+  // compaction user message -> hidden
+  assert.strictEqual(P.messageVisible({ id: "m1", role: "user" }, [{ type: "compaction" }]), false);
+  // user message with an image file -> shown
+  assert.strictEqual(P.messageVisible({ id: "m2", role: "user" }, [{ type: "file" }]), true);
+  // unfinished assistant with no content yet -> shown (still streaming)
+  assert.strictEqual(P.messageVisible({ id: "m3", role: "assistant" }, [{ type: "step-start" }]), true);
+  // finished empty assistant -> hidden
+  assert.strictEqual(P.messageVisible({ id: "m4", role: "assistant", time: { completed: 1 } }, [{ type: "step-start" }]), false);
+  // errored assistant -> shown
+  assert.strictEqual(P.messageVisible({ id: "m5", role: "assistant", error: { name: "x" } }, []), true);
 });
 
 test("fmtSize buckets", () => {
@@ -157,10 +218,44 @@ test("fmtDurationMs", () => {
   assert.strictEqual(P.fmtDurationMs(-5), "0.0s");
 });
 
+test("partTiming classifies reasoning / tool / text parts", () => {
+  assert.deepStrictEqual(P.partTiming({ type: "reasoning", time: { start: 10, end: 30 } }), { kind: "think", start: 10, end: 30 });
+  assert.deepStrictEqual(P.partTiming({ type: "text", time: { start: 5, end: 9 } }), { kind: "gen", start: 5, end: 9 });
+  assert.deepStrictEqual(P.partTiming({ type: "tool", state: { time: { start: 1, end: 4 } } }), { kind: "tool", start: 1, end: 4 });
+  assert.strictEqual(P.partTiming({ type: "tool", state: {} }), null);
+  assert.strictEqual(P.partTiming({ type: "step-start" }), null);
+  assert.strictEqual(P.partTiming(null), null);
+});
+
+test("sumPartTimings totals thinking / tool / generation and marks live", () => {
+  const map = {
+    a: { kind: "think", start: 0, end: 2000 },
+    b: { kind: "tool", start: 2000, end: 3500 },
+    c: { kind: "gen", start: 3500, end: 5000 },
+  };
+  const done = P.sumPartTimings(map, 9999);
+  assert.deepStrictEqual(done.t, { think: 2000, tool: 1500, gen: 1500, total: 5000 });
+  assert.strictEqual(done.live, false);
+  const live = P.sumPartTimings({ a: { kind: "think", start: 1000, end: 0 } }, 4000);
+  assert.strictEqual(live.t.think, 3000);
+  assert.strictEqual(live.t.total, 3000);
+  assert.strictEqual(live.live, true);
+  assert.deepStrictEqual(P.sumPartTimings(null, 1).t, { think: 0, tool: 0, gen: 0, total: 0 });
+});
+
+test("entryTotalMs uses turnEnd wall-clock, else falls back", () => {
+  assert.strictEqual(P.entryTotalMs({ genStart: 1000, turnEnd: 4000 }, false, 999), 3000);
+  assert.strictEqual(P.entryTotalMs({ genStart: 1000 }, false, 500), 500);
+  assert.strictEqual(P.entryTotalMs(null, false, 7), 7);
+  assert.strictEqual(P.entryTotalMs({ genStart: 5000, turnEnd: 1000 }, false, 0), 0);
+});
+
 test("parentPath handles windows paths", () => {
   assert.strictEqual(P.parentPath("C:\\Users\\x"), "C:\\Users");
   assert.strictEqual(P.parentPath("C:\\Users"), "C:\\");
   assert.strictEqual(P.parentPath("C:\\Users\\x\\"), "C:\\Users");
+  assert.strictEqual(P.parentPath("D:\\"), "D:\\");
+  assert.strictEqual(P.parentPath("D:"), "D:\\");
 });
 
 test("escapeRe escapes regex metacharacters", () => {
@@ -406,5 +501,248 @@ test("ocrDisplayKeyFromParts hashes only OCR-prefixed text parts", () => {
   assert.strictEqual(P.ocrDisplayKeyFromParts([{ type: "text", text: "hi" }]), "");
   assert.strictEqual(P.ocrDisplayKeyFromParts([]), "");
 });
+
+const MD_L = {
+  session: "会话", assistant: "助手", workspace: "工作区", exportedAt: "导出时间", messageCount: "消息数",
+  you: "你", thinking: "思考", tool: "工具", image: "图片", file: "文件", truncated: "（截断）",
+};
+
+test("mdFileName sanitizes illegal chars and bounds length", () => {
+  assert.strictEqual(P.mdFileName('a/b:c*?'), "a-b-c");
+  assert.strictEqual(P.mdFileName("   "), "session");
+  assert.strictEqual(P.mdFileName(null), "session");
+  assert.strictEqual(P.mdFileName("a".repeat(100)).length, 60);
+});
+
+test("mdFence grows past embedded backtick runs", () => {
+  assert.strictEqual(P.mdFence("hi"), "```\nhi\n```");
+  assert.ok(P.mdFence("x\n````\ny").startsWith("`````\n"));
+});
+
+test("messageToMarkdown renders roles, strips stamp, tools and files", () => {
+  const user = { info: { role: "user" }, parts: [{ type: "text", text: "你好\n\n[发送时间：2026-01-01 00:00:00]" }] };
+  assert.strictEqual(P.messageToMarkdown(user, MD_L), "## 你\n\n你好");
+  const asst = {
+    info: { role: "assistant" },
+    parts: [
+      { type: "text", text: "完成" },
+      { type: "reasoning", text: "先看看" },
+      { type: "tool", tool: "bash", state: { status: "completed", input: { command: "npm test" }, output: "ok\n" } },
+      { type: "file", mime: "image/png", filename: "a.png" },
+    ],
+  };
+  const md = P.messageToMarkdown(asst, MD_L);
+  assert.ok(md.startsWith("## 助手"));
+  assert.ok(md.includes("**思考**\n\n> 先看看"));
+  assert.ok(md.includes("**工具："));
+  assert.ok(md.includes("`npm test`"));
+  assert.ok(md.includes("ok"));
+  assert.ok(md.includes("[图片：a.png]"));
+  assert.strictEqual(P.messageToMarkdown({ info: { role: "assistant" }, parts: [{ type: "step-start" }] }, MD_L), "");
+});
+
+test("normalizeThemePref accepts light/dark else auto", () => {
+  assert.strictEqual(P.normalizeThemePref("dark"), "dark");
+  assert.strictEqual(P.normalizeThemePref("light"), "light");
+  assert.strictEqual(P.normalizeThemePref("auto"), "auto");
+  assert.strictEqual(P.normalizeThemePref("bogus"), "auto");
+  assert.strictEqual(P.normalizeThemePref(null), "auto");
+});
+
+test("clampFontSize bounds to 12..22 with 15 default", () => {
+  assert.strictEqual(P.clampFontSize(14), 14);
+  assert.strictEqual(P.clampFontSize(5), 12);
+  assert.strictEqual(P.clampFontSize(99), 22);
+  assert.strictEqual(P.clampFontSize("16"), 16);
+  assert.strictEqual(P.clampFontSize("x"), 15);
+  assert.strictEqual(P.clampFontSize(null), 15);
+});
+
+test("edgeSwipeIntent opens from the left edge and closes on left drag", () => {
+  assert.strictEqual(P.edgeSwipeIntent({ startX: 5, endX: 60, startY: 100, endY: 102, open: false, edge: 28, trigger: 40 }), "open");
+  assert.strictEqual(P.edgeSwipeIntent({ startX: 80, endX: 140, startY: 100, endY: 100, open: false, edge: 28, trigger: 40 }), "none");
+  assert.strictEqual(P.edgeSwipeIntent({ startX: 5, endX: 30, startY: 100, endY: 100, open: false, edge: 28, trigger: 40 }), "none");
+  assert.strictEqual(P.edgeSwipeIntent({ startX: 200, endX: 120, startY: 100, endY: 104, open: true, edge: 28, trigger: 40 }), "close");
+  assert.strictEqual(P.edgeSwipeIntent({ startX: 200, endX: 160, startY: 100, endY: 104, open: true, edge: 28, trigger: 40 }), "none");
+  assert.strictEqual(P.edgeSwipeIntent({ startX: 5, endX: 60, startY: 100, endY: 220, open: false, edge: 28, trigger: 40 }), "none");
+});
+
+test("guessFileName derives a name from a url or fallback", () => {
+  assert.strictEqual(P.guessFileName("http://x/y/photo.png"), "photo.png");
+  const data = P.guessFileName("data:image/png;base64,AAAA", "shot");
+  assert.match(data, /^shot-\d+\.png$/);
+  const webb = P.guessFileName("data:image/webp;base64,AAAA", "");
+  assert.match(webb, /^opencode-\d+\.webp$/);
+});
+
+test("isAndroidApp is false without the native bridge", () => {
+  assert.strictEqual(P.isAndroidApp(), false);
+});
+
+test("favLabel takes the last path segment", () => {
+  assert.strictEqual(P.favLabel("D:\\work\\my project"), "my project");
+  assert.strictEqual(P.favLabel("D:\\work\\my project\\"), "my project");
+  assert.strictEqual(P.favLabel("/home/user/docs"), "docs");
+  assert.strictEqual(P.favLabel("D:\\"), "D:");
+});
+
+test("fileExt / isImageName / fileMime map extensions", () => {
+  assert.strictEqual(P.fileExt("Photo.PNG"), "png");
+  assert.strictEqual(P.fileExt("noext"), "");
+  assert.strictEqual(P.fileExt("a.b.c.txt"), "txt");
+  assert.strictEqual(P.isImageName("a.webp"), true);
+  assert.strictEqual(P.isImageName("a.jpeg"), true);
+  assert.strictEqual(P.isImageName("a.txt"), false);
+  assert.strictEqual(P.fileMime("a.md"), "text/markdown");
+  assert.strictEqual(P.fileMime("a.unknown"), "application/octet-stream");
+});
+
+test("sessionToMarkdown builds a header, metadata and separators", () => {
+  const md = P.sessionToMarkdown({ id: "s1", title: "测试会话", directory: "C:\\ws\\a" }, [
+    { info: { role: "user" }, parts: [{ type: "text", text: "hi" }] },
+    { info: { role: "assistant" }, parts: [{ type: "text", text: "yo" }] },
+  ], Object.assign({}, MD_L, { assistantName: "小助" }));
+  assert.ok(md.startsWith("# 测试会话\n"));
+  assert.ok(md.includes("- 助手：小助"));
+  assert.ok(md.includes("- 工作区：C:\\ws\\a"));
+  assert.ok(md.includes("- 消息数：2"));
+  assert.ok(md.includes("## 你\n\nhi"));
+  assert.ok(md.includes("---\n\n## 助手\n\nyo"));
+  const empty = P.sessionToMarkdown({ id: "s2" }, [], Object.assign({}, MD_L, { assistantName: "x" }));
+  assert.ok(empty.includes("- 消息数：0"));
+  assert.ok(!empty.includes("## 你"));
+});
+
+test("outlineSnippet collapses whitespace and truncates with ellipsis", () => {
+  assert.strictEqual(P.outlineSnippet("  hello \n\n world  "), "hello world");
+  assert.strictEqual(P.outlineSnippet("a".repeat(80)).length, 65);
+  assert.strictEqual(P.outlineSnippet("a".repeat(80)).endsWith("…"), true);
+  assert.strictEqual(P.outlineSnippet("short", 10), "short");
+  assert.strictEqual(P.outlineSnippet(null), "");
+  assert.strictEqual(P.outlineSnippet("abcdef", 3), "abc…");
+  assert.strictEqual(P.outlineSnippet("abcdef", 0), "abcdef");
+});
+
+test("outlineItems condenses roles, tools and strips user send stamp", () => {
+  const items = P.outlineItems([
+    { info: { id: "u1", role: "user" }, parts: [{ type: "text", text: "你好\n\n[发送时间：2026-01-01 00:00:00]" }] },
+    { info: { id: "a1", role: "assistant" }, parts: [
+      { type: "text", text: "第一段" },
+      { type: "text", text: "第二段" },
+      { type: "tool", tool: "bash" },
+      { type: "tool", tool: "bash" },
+      { type: "file", mime: "image/png" },
+      { type: "reasoning", text: "思考中" },
+    ] },
+    { info: { id: "a2", role: "assistant" }, parts: [{ type: "text", text: "", synthetic: true }] },
+  ]);
+  assert.deepStrictEqual(items.map((x) => x.id), ["u1", "a1", "a2"]);
+  assert.strictEqual(items[0].role, "user");
+  assert.strictEqual(items[0].text, "你好");
+  assert.deepStrictEqual(items[1].tools, ["bash", "file"]);
+  assert.strictEqual(items[1].text, "第一段 第二段");
+  assert.strictEqual(items[2].text, "");
+});
+
+test("ggufAlias derives a safe model id from a file path", () => {
+  assert.strictEqual(P.ggufAlias("D:\\models\\Qwen2.5-7B-Instruct.Q4_K_M.gguf"), "Qwen2.5-7B-Instruct.Q4_K_M");
+  assert.strictEqual(P.ggufAlias("/home/u/my model.gguf"), "my-model");
+  assert.strictEqual(P.ggufAlias(""), "local-model");
+  assert.strictEqual(P.ggufAlias("....gguf"), "local-model");
+  assert.strictEqual(P.ggufAlias("a".repeat(100) + ".gguf").length, 64);
+});
+
+test("localRuntimeLabel summarizes the installed runtime", () => {
+  assert.strictEqual(P.localRuntimeLabel(null), "未安装");
+  assert.strictEqual(P.localRuntimeLabel({ installed: false }), "未安装");
+  assert.strictEqual(P.localRuntimeLabel({ installed: true, variant: "cuda", tag: "b11105" }), "CUDA · b11105");
+  assert.strictEqual(P.localRuntimeLabel({ installed: true, variant: "cpu" }), "CPU");
+});
+
+test("localProgressText renders install progress", () => {
+  assert.strictEqual(P.localProgressText(null), "");
+  assert.strictEqual(P.localProgressText({ state: "ready", variant: "cuda" }), "运行时就绪（cuda）");
+  assert.ok(P.localProgressText({ installing: true, state: "downloading", received: 50, total: 100 }).includes("50%"));
+  assert.ok(P.localProgressText({ installing: true, state: "downloading", received: 1048576, total: 0 }).includes("1 MB"));
+  assert.ok(P.localProgressText({ installing: true, state: "extracting" }).includes("解压"));
+  assert.ok(P.localProgressText({ state: "error", error: "boom" }).includes("boom"));
+});
+
+test("mediaKindOf buckets mime types", () => {
+  assert.strictEqual(P.mediaKindOf("image/png"), "image");
+  assert.strictEqual(P.mediaKindOf("image/jpeg"), "image");
+  assert.strictEqual(P.mediaKindOf("video/mp4"), "video");
+  assert.strictEqual(P.mediaKindOf("audio/mpeg"), "audio");
+  assert.strictEqual(P.mediaKindOf("application/pdf"), "pdf");
+  assert.strictEqual(P.mediaKindOf("text/plain"), "file");
+  assert.strictEqual(P.mediaKindOf(""), "file");
+  assert.strictEqual(P.mediaKindOf(null), "file");
+});
+
+test("mediaItemKey is stable, typed and url-sensitive", () => {
+  assert.strictEqual(P.mediaItemKey("image/png", "data:abc"), P.mediaItemKey("image/png", "data:abc"));
+  assert.notStrictEqual(P.mediaItemKey("image/png", "data:abc"), P.mediaItemKey("image/png", "data:xyz"));
+  assert.ok(P.mediaItemKey("image/png", "u").startsWith("image|"));
+  assert.ok(P.mediaItemKey("application/pdf", "u").startsWith("pdf|"));
+});
+
+test("mediaItemsFromParts extracts file parts and tool attachments", () => {
+  const parts = [
+    { type: "text", text: "hi" },
+    { type: "file", mime: "image/png", filename: "a.png", url: "data:image/png;base64,AAAA" },
+    { type: "tool", state: { attachments: [{ mime: "image/jpeg", filename: "b.jpg", url: "/file/b" }, { url: "" }] } },
+    { type: "tool", state: { attachments: null } },
+  ];
+  const items = P.mediaItemsFromParts(parts, {
+    sessionId: "s1", sessionTitle: "会话一", directory: "C:\\ws", messageId: "m1", role: "assistant", at: 123,
+  });
+  assert.strictEqual(items.length, 2);
+  assert.strictEqual(items[0].name, "a.png");
+  assert.strictEqual(items[0].kind, "image");
+  assert.strictEqual(items[0].source, "assistant");
+  assert.strictEqual(items[0].sessionId, "s1");
+  assert.strictEqual(items[0].directory, "C:\\ws");
+  assert.strictEqual(items[0].at, 123);
+  assert.strictEqual(items[1].name, "b.jpg");
+  assert.strictEqual(items[1].url, "/file/b");
+});
+
+test("mediaItemsFromParts marks user role as source user", () => {
+  const items = P.mediaItemsFromParts([{ type: "file", mime: "image/png", url: "x" }], { role: "user" });
+  assert.strictEqual(items.length, 1);
+  assert.strictEqual(items[0].source, "user");
+});
+
+test("mediaItemsFromParts tolerates empty input", () => {
+  assert.deepStrictEqual(P.mediaItemsFromParts(null, null), []);
+  assert.deepStrictEqual(P.mediaItemsFromParts([], {}), []);
+  assert.deepStrictEqual(P.mediaItemsFromParts([{ type: "file" }], {}), []);
+});
+
+test("mediaFilter filters by kind, source and query terms", () => {
+  const items = [
+    { id: "1", kind: "image", source: "user", name: "cat.png", sessionTitle: "日常", mime: "image/png" },
+    { id: "2", kind: "image", source: "assistant", name: "dog.jpg", sessionTitle: "工作", mime: "image/jpeg" },
+    { id: "3", kind: "pdf", source: "user", name: "report.pdf", sessionTitle: "工作", mime: "application/pdf" },
+  ];
+  assert.strictEqual(P.mediaFilter(items, {}).length, 3);
+  assert.strictEqual(P.mediaFilter(items, { kind: "image" }).length, 2);
+  assert.strictEqual(P.mediaFilter(items, { source: "user" }).length, 2);
+  assert.strictEqual(P.mediaFilter(items, { source: "assistant" })[0].id, "2");
+  assert.strictEqual(P.mediaFilter(items, { query: "dog" })[0].id, "2");
+  assert.strictEqual(P.mediaFilter(items, { query: "工作" }).length, 2);
+  assert.strictEqual(P.mediaFilter(items, { query: "工作 pdf" })[0].id, "3");
+  assert.strictEqual(P.mediaFilter(items, { kind: "image", source: "user" })[0].id, "1");
+  assert.strictEqual(P.mediaFilter(items, { query: "nope" }).length, 0);
+  assert.deepStrictEqual(P.mediaFilter(null, {}), []);
+});
+
+test("mediaArchiveSummary counts and sums sizes", () => {
+  assert.deepStrictEqual(P.mediaArchiveSummary(null), { count: 0, bytes: 0 });
+  const s = P.mediaArchiveSummary([{ size: 100 }, { size: 250 }, {}]);
+  assert.strictEqual(s.count, 3);
+  assert.strictEqual(s.bytes, 350);
+});
+
 
 

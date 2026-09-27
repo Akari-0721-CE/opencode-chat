@@ -40,6 +40,8 @@ let eventsDir = null;
 let msgEls = {};
 let partEls = {};
 let dirtyMsgIds = new Set();
+/* opencode 内部的 compaction 等「用户消息」（只含 compaction part）不应在界面出现 */
+let hiddenMsgIds = new Set();
 let pendingPerms = [];
 let pendingQuestions = [];
 const questionByCall = {};
@@ -145,9 +147,9 @@ function initProfileAutosave() {
   window.addEventListener("beforeunload", flushProfile);
   document.addEventListener("visibilitychange", () => { if (document.hidden) flushProfile(); });
 }
-async function restoreProfile() {
+async function restoreProfile(force) {
   try {
-    if (localStorage.getItem(STORE_KEY)) return false;
+    if (!force && localStorage.getItem(STORE_KEY)) return false;
     const r = await api("/_profile", { noDir: true });
     const data = r && r.data;
     if (!data || typeof data !== "object") return false;

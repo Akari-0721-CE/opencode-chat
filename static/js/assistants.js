@@ -1,6 +1,7 @@
 /* ============ 助手 / 文件夹 树 ============ */
 function renderTree() {
   treeEl.innerHTML = "";
+  const remote = (typeof isRemote === "function") && isRemote();
   if (!S.assistants.length && !S.folders.length) {
     treeEl.appendChild(el("div", "tree-empty", "还没有助手，点击「新建助手」"));
     return;
@@ -32,13 +33,16 @@ function renderTree() {
     bFav.title = a.favorite ? "取消收藏" : "收藏";
     bFav.appendChild(iconEl(a.favorite ? "starFill" : "star"));
     bFav.onclick = (e) => { e.stopPropagation(); a.favorite = !a.favorite; saveStore(); renderTree(); };
-    const bEdit = el("button", "mini-btn"); bEdit.title = "编辑"; bEdit.appendChild(iconEl("pencil"));
-    bEdit.onclick = (e) => { e.stopPropagation(); openAssistantModal(a.id); };
-    const bCopy = el("button", "mini-btn"); bCopy.title = "复制助手（不含对话）"; bCopy.appendChild(iconEl("copy"));
-    bCopy.onclick = (e) => { e.stopPropagation(); duplicateAssistant(a.id); };
-    const bDel = el("button", "mini-btn"); bDel.title = "删除"; bDel.appendChild(iconEl("trash"));
-    bDel.onclick = (e) => { e.stopPropagation(); deleteAssistant(a.id); };
-    actions.append(bFav, bEdit, bCopy, bDel);
+    actions.append(bFav);
+    if (!remote) {
+      const bEdit = el("button", "mini-btn"); bEdit.title = "编辑"; bEdit.appendChild(iconEl("pencil"));
+      bEdit.onclick = (e) => { e.stopPropagation(); openAssistantModal(a.id); };
+      const bCopy = el("button", "mini-btn"); bCopy.title = "复制助手（不含对话）"; bCopy.appendChild(iconEl("copy"));
+      bCopy.onclick = (e) => { e.stopPropagation(); duplicateAssistant(a.id); };
+      const bDel = el("button", "mini-btn"); bDel.title = "删除"; bDel.appendChild(iconEl("trash"));
+      bDel.onclick = (e) => { e.stopPropagation(); deleteAssistant(a.id); };
+      actions.append(bEdit, bCopy, bDel);
+    }
     row.appendChild(actions);
     syncAriaLabels(actions);
 
@@ -61,13 +65,15 @@ function renderTree() {
     row.append(chev, av, el("span", "label", f.name || "文件夹"));
 
     const actions = el("div", "row-actions");
-    const bAdd = el("button", "mini-btn"); bAdd.title = "在此新建助手"; bAdd.appendChild(iconEl("plus"));
-    bAdd.onclick = (e) => { e.stopPropagation(); openAssistantModal(null, f.id); };
-    const bEdit = el("button", "mini-btn"); bEdit.title = "重命名"; bEdit.appendChild(iconEl("pencil"));
-    bEdit.onclick = (e) => { e.stopPropagation(); renameFolder(f.id); };
-    const bDel = el("button", "mini-btn"); bDel.title = "删除文件夹（助手将移到顶层）"; bDel.appendChild(iconEl("trash"));
-    bDel.onclick = (e) => { e.stopPropagation(); deleteFolder(f.id); };
-    actions.append(bAdd, bEdit, bDel);
+    if (!remote) {
+      const bAdd = el("button", "mini-btn"); bAdd.title = "在此新建助手"; bAdd.appendChild(iconEl("plus"));
+      bAdd.onclick = (e) => { e.stopPropagation(); openAssistantModal(null, f.id); };
+      const bEdit = el("button", "mini-btn"); bEdit.title = "重命名"; bEdit.appendChild(iconEl("pencil"));
+      bEdit.onclick = (e) => { e.stopPropagation(); renameFolder(f.id); };
+      const bDel = el("button", "mini-btn"); bDel.title = "删除文件夹（助手将移到顶层）"; bDel.appendChild(iconEl("trash"));
+      bDel.onclick = (e) => { e.stopPropagation(); deleteFolder(f.id); };
+      actions.append(bAdd, bEdit, bDel);
+    }
     row.appendChild(actions);
     syncAriaLabels(actions);
 
@@ -255,6 +261,19 @@ function uniqueWorkspace(name) {
   let i = 2;
   while (used.has(normDir(path))) { path = base + "\\" + folder + "-" + i; i++; }
   return path;
+}
+function workspaceTarget(base, name, used) {
+  if (!base) return "";
+  const folder = sanitizeFolderName(name);
+  const set = (used instanceof Set) ? used : new Set(used || []);
+  let path = base + "\\" + folder;
+  let i = 2;
+  while (set.has(normDir(path))) { path = base + "\\" + folder + "-" + i; i++; }
+  return path;
+}
+function dirUnderBase(dir, base) {
+  const d = normDir(dir), b = normDir(base);
+  return !!d && !!b && d.startsWith(b + "\\");
 }
 async function ensureWorkspaceDir(path) {
   await api("/_mkdir", {

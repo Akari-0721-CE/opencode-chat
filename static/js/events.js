@@ -8,11 +8,11 @@ function handleEvent(evt) {
 
   switch (evt.type) {
     case "message.updated": {
-      if (p.info) {
+      if (p.info && !hiddenMsgIds.has(p.info.id)) {
         const holder = ensureMessageEl(p.info);
         dirtyMsgIds.add(p.info.id);
         updateTokenBadge(p.info);
-        renderMessageError(holder, p.info);
+        if (holder) renderMessageError(holder, p.info);
       }
       break;
     }
@@ -20,11 +20,21 @@ function handleEvent(evt) {
       const part = p.part;
       if (!part) break;
       if (part.messageID) dirtyMsgIds.add(part.messageID);
+      /* opencode 内部 compaction 消息（role=user，仅含 compaction part）不显示 */
+      if (part.type === "compaction") { hideMessageEl(part.messageID); break; }
+      /* opencode 把纯文本文件转成合成文本 part，不在界面重复展示 */
+      if (part.type === "text" && part.synthetic) {
+        if (typeof recordPartTiming === "function") recordPartTiming(part);
+        break;
+      }
       const el = ensurePartEl(part);
+      if (typeof recordPartTiming === "function") recordPartTiming(part);
       if (el) {
         if (part.type === "text") {
           const owner = msgEls[part.messageID];
-          if ((owner && owner.role === "user") || (part.text && PURE_STAMP_RE.test(part.text))) {
+          const isUser = (owner && owner.role === "user") || (!owner && part.text && PURE_STAMP_RE.test(part.text));
+          if (isUser) {
+            el.__raw = part.text || "";
             applyUserStamp(el, part.text || "");
           } else {
             el.__raw = part.text || "";
@@ -394,19 +404,46 @@ function setBusy(b) {
     const c = document.createElement("span");
     c.className = "cursor";
     messagesEl.appendChild(c);
-    scrollBottom(true);
+    scrollBottom();
   } else {
     markLastAssistant();
   }
 }
 
 let autoScroll = true;
+/* 停止滚动 / 上翻交互达到该时长后，恢复自动跟随（输出中也可短暂上翻查看）。 */
+const RESUME_IDLE_MS = 3000;
+let lastUserScroll = 0;
+let progScroll = false; /* 区分程序触发的 scroll，避免把自动跟滚当成用户操作 */
 function nearBottom() {
   return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 80;
 }
+/* 严格贴底判定：用户一旦离开底部就不自动跟随，避免打断向上翻阅历史。 */
+function atBottom() {
+  return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 24;
+}
 function scrollBottom(force) {
-  if (force || autoScroll) messagesEl.scrollTop = messagesEl.scrollHeight;
+  /* 用户已停止操作滚动一段时间：即使此前上翻过，也恢复跟随新输出。 */
+  if (!force && !autoScroll && Date.now() - lastUserScroll >= RESUME_IDLE_MS) autoScroll = true;
+  if (force || autoScroll) {
+    const maxTop = messagesEl.scrollHeight - messagesEl.clientHeight;
+    if (messagesEl.scrollTop < maxTop) { progScroll = true; messagesEl.scrollTop = messagesEl.scrollHeight; }
+  }
   if (typeof updateScrollBottom === "function") updateScrollBottom();
+}
+/* 用户主动上滑 / 翻页时立即退出跟随（无需等到 scroll 事件）。 */
+function leaveAutoScroll() {
+  lastUserScroll = Date.now();
+  if (!atBottom()) autoScroll = false;
+  if (typeof updateScrollBottom === "function") updateScrollBottom();
+}
+if (messagesEl && messagesEl.addEventListener) {
+  messagesEl.addEventListener("wheel", (e) => { if (e && typeof e.deltaY === "number" && e.deltaY < 0) leaveAutoScroll(); }, { passive: true });
+  messagesEl.addEventListener("touchmove", leaveAutoScroll, { passive: true });
+  messagesEl.addEventListener("keydown", (e) => {
+    const k = e && e.key;
+    if (k === "ArrowUp" || k === "PageUp" || k === "Home") leaveAutoScroll();
+  });
 }
 function stickReasoning(el) {
   if (el && el.__stick !== false) el.scrollTop = el.scrollHeight;

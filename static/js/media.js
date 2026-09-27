@@ -1,17 +1,22 @@
-/* ============ 图片查看器 ============ */
+/* ============ 图片查看器（相册式：捏合缩放 / 拖动 / 双击 / 左右切换 / 下滑关闭） ============ */
 const imgViewer = $("imgViewer");
 const ivStage = $("ivStage");
 const ivImg = $("ivImg");
 let ivScale = 1, ivX = 0, ivY = 0;
+let ivList = [];
+let ivIndex = 0;
+const IV_MIN = 0.8, IV_MAX = 8;
+let ivMoved = false;
 
 function ivApply() { ivImg.style.transform = "translate(" + ivX + "px," + ivY + "px) scale(" + ivScale + ")"; }
-function ivReset() { ivScale = 1; ivX = 0; ivY = 0; ivApply(); }
+function ivReset() { ivScale = 1; ivX = 0; ivY = 0; ivImg.style.opacity = "1"; ivApply(); }
+function ivClampScale(s) { return Math.min(IV_MAX, Math.max(IV_MIN, s)); }
 function ivZoomAt(factor, cx, cy) {
   const rect = ivStage.getBoundingClientRect();
   const px = cx - rect.left - rect.width / 2;
   const py = cy - rect.top - rect.height / 2;
   const prev = ivScale;
-  const next = Math.min(16, Math.max(0.05, ivScale * factor));
+  const next = ivClampScale(ivScale * factor);
   if (next === prev) return;
   ivX = px - (px - ivX) * (next / prev);
   ivY = py - (py - ivY) * (next / prev);
@@ -22,12 +27,46 @@ function ivZoomCenter(factor) {
   const rect = ivStage.getBoundingClientRect();
   ivZoomAt(factor, rect.left + rect.width / 2, rect.top + rect.height / 2);
 }
-function openImageViewer(src, name) {
-  if (!src) return;
-  ivImg.src = src;
-  $("ivName").textContent = name || "";
-  $("ivOpen").href = src;
+function ivUpdateChrome() {
+  const n = ivList.length;
+  const cur = ivList[ivIndex];
+  if ($("ivName")) $("ivName").textContent = cur ? (cur.name || "") : "";
+  if ($("ivCount")) $("ivCount").textContent = n > 1 ? ((ivIndex + 1) + " / " + n) : "";
+  if ($("ivPrev")) $("ivPrev").disabled = n <= 1;
+  if ($("ivNext")) $("ivNext").disabled = n <= 1;
+  if ($("ivOpen")) $("ivOpen").href = cur ? cur.src : "#";
+}
+function ivShow(index) {
+  if (!ivList.length) return;
+  ivIndex = ((index % ivList.length) + ivList.length) % ivList.length;
+  const cur = ivList[ivIndex];
+  ivImg.src = cur.src;
   ivReset();
+  ivUpdateChrome();
+  for (const d of [1, -1]) {
+    if (ivList.length < 2) break;
+    const nb = ivList[((ivIndex + d) % ivList.length + ivList.length) % ivList.length];
+    if (nb && nb.src) { try { const im = new Image(); im.src = nb.src; } catch (e) { /* ignore */ } }
+  }
+}
+function ivNext() { if (ivList.length > 1) ivShow(ivIndex + 1); }
+function ivPrev() { if (ivList.length > 1) ivShow(ivIndex - 1); }
+
+function openImageViewer(src, name, list, index) {
+  if (!src) return;
+  if (Array.isArray(list) && list.length) {
+    ivList = list.map((x) => (x && x.src) ? { src: x.src, name: x.name || "" } : { src: String(x), name: "" });
+    let i = (typeof index === "number" && index >= 0) ? index : ivList.findIndex((x) => x.src === src);
+    if (i < 0 || !ivList[i] || ivList[i].src !== src) { ivList.unshift({ src: src, name: name || "" }); i = 0; }
+    ivIndex = i;
+  } else {
+    ivList = [{ src: src, name: name || "" }];
+    ivIndex = 0;
+  }
+  ivMoved = false;
+  try { ivPointers.clear(); } catch (e) { /* ignore */ }
+  ivSwipe = null; ivPinch = null;
+  ivShow(ivIndex);
   imgViewer.classList.add("show");
 }
 function closeImageViewer() {
@@ -35,49 +74,149 @@ function closeImageViewer() {
   ivStage.classList.remove("dragging");
   ivImg.removeAttribute("style");
   ivImg.src = "";
+  ivList = []; ivIndex = 0;
+  ivMoved = false;
+  try { ivPointers.clear(); } catch (e) { /* ignore */ }
+  ivSwipe = null; ivPinch = null;
 }
-$("ivClose").onclick = closeImageViewer;
-$("ivReset").onclick = ivReset;
-$("ivZoomIn").onclick = () => ivZoomCenter(1.25);
-$("ivZoomOut").onclick = () => ivZoomCenter(0.8);
-let ivMoved = false;
-imgViewer.addEventListener("click", (e) => {
-  if ((e.target === imgViewer || e.target === ivStage) && !ivMoved) closeImageViewer();
+
+/* ---------- 手势：单指拖动 / 双指捏合 / 双击 / 左右切换 / 下滑关闭 ---------- */
+const ivPointers = new Map();
+let ivPinch = null;
+let ivSwipe = null;
+let ivLastTapAt = 0, ivLastTapX = 0, ivLastTapY = 0;
+
+function ivMid() {
+  const pts = Array.from(ivPointers.values());
+  if (pts.length < 2) return null;
+  const a = pts[0], b = pts[1];
+  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, dist: Math.hypot(a.x - b.x, a.y - b.y) };
+}
+ivStage.addEventListener("pointerdown", (e) => {
+  if (e.pointerType === "mouse" && e.button !== 0) return;
+  ivMoved = false;
+  ivPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  try { ivStage.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+  if (ivPointers.size === 1) {
+    ivSwipe = { id: e.pointerId, x: e.clientX, y: e.clientY, ox: ivX, oy: ivY, moved: false, mode: ivScale > 1.02 ? "pan" : "swipe" };
+    ivPinch = null;
+  } else if (ivPointers.size === 2) {
+    ivSwipe = null;
+    const m = ivMid();
+    if (m) ivPinch = { dist: m.dist, scale: ivScale, x: m.x, y: m.y, ox: ivX, oy: ivY };
+  }
+  ivStage.classList.add("dragging");
 });
+ivStage.addEventListener("pointermove", (e) => {
+  if (!ivPointers.has(e.pointerId)) return;
+  ivPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (ivPointers.size >= 2 && ivPinch) {
+    const m = ivMid();
+    if (m && ivPinch.dist > 0) {
+      const ns = ivClampScale(ivPinch.scale * (m.dist / ivPinch.dist));
+      const rect = ivStage.getBoundingClientRect();
+      const px = ivPinch.x - rect.left - rect.width / 2;
+      const py = ivPinch.y - rect.top - rect.height / 2;
+      const ratio = ns / ivPinch.scale;
+      ivScale = ns;
+      ivX = px - (px - ivPinch.ox) * ratio + (m.x - ivPinch.x);
+      ivY = py - (py - ivPinch.oy) * ratio + (m.y - ivPinch.y);
+      ivApply();
+      ivMoved = true;
+    }
+    return;
+  }
+  if (ivSwipe && ivSwipe.id === e.pointerId) {
+    const dx = e.clientX - ivSwipe.x, dy = e.clientY - ivSwipe.y;
+    if (Math.abs(dx) + Math.abs(dy) > 4) { ivMoved = true; ivSwipe.moved = true; }
+    if (ivSwipe.mode === "pan") { ivX = ivSwipe.ox + dx; ivY = ivSwipe.oy + dy; ivApply(); }
+    else if (ivSwipe.moved) {
+      const ty = dy > 0 ? dy : 0;
+      ivImg.style.transform = "translate(" + dx + "px," + ty + "px) scale(" + ivScale + ")";
+      ivImg.style.opacity = String(Math.max(0.3, 1 - Math.abs(dx) / 420 - ty / 520));
+    }
+  }
+});
+function ivEndPointer(e) {
+  const sw = (ivSwipe && ivSwipe.id === e.pointerId) ? ivSwipe : null;
+  ivPointers.delete(e.pointerId);
+  try { ivStage.releasePointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+  if (ivPointers.size === 0) {
+    ivStage.classList.remove("dragging");
+    if (sw && sw.moved && sw.mode !== "pan") {
+      const dx = e.clientX - sw.x, dy = e.clientY - sw.y;
+      if (dy > 90 && Math.abs(dy) > Math.abs(dx)) { closeImageViewer(); ivSwipe = null; ivPinch = null; return; }
+      if (dx <= -55) ivNext();
+      else if (dx >= 55) ivPrev();
+      else { ivImg.style.opacity = "1"; ivApply(); }
+    } else {
+      ivImg.style.opacity = "1"; ivApply();
+    }
+    if (!ivMoved) {
+      const now = Date.now();
+      if (now - ivLastTapAt < 300 && Math.abs(e.clientX - ivLastTapX) < 40 && Math.abs(e.clientY - ivLastTapY) < 40) {
+        ivLastTapAt = 0;
+        if (ivScale > 1.02) ivReset(); else ivZoomAt(2.5, e.clientX, e.clientY);
+      } else {
+        ivLastTapAt = now; ivLastTapX = e.clientX; ivLastTapY = e.clientY;
+      }
+    }
+    ivSwipe = null; ivPinch = null;
+  } else if (ivPointers.size === 1) {
+    ivPinch = null;
+    const p = Array.from(ivPointers.entries())[0];
+    ivSwipe = { id: p[0], x: p[1].x, y: p[1].y, ox: ivX, oy: ivY, moved: false, mode: ivScale > 1.02 ? "pan" : "swipe" };
+  }
+}
+ivStage.addEventListener("pointerup", ivEndPointer);
+ivStage.addEventListener("pointercancel", ivEndPointer);
 ivStage.addEventListener("wheel", (e) => {
   e.preventDefault();
   ivZoomAt(e.deltaY < 0 ? 1.15 : 1 / 1.15, e.clientX, e.clientY);
 }, { passive: false });
-let ivDrag = null;
-ivStage.addEventListener("pointerdown", (e) => {
-  if (e.button !== 0) return;
-  ivMoved = false;
-  ivDrag = { x: e.clientX, y: e.clientY, ox: ivX, oy: ivY };
-  ivStage.classList.add("dragging");
-  try { ivStage.setPointerCapture(e.pointerId); } catch (err) {}
+imgViewer.addEventListener("click", (e) => {
+  if ((e.target === imgViewer || e.target === ivStage) && !ivMoved) closeImageViewer();
 });
-ivStage.addEventListener("pointermove", (e) => {
-  if (!ivDrag) return;
-  const dx = e.clientX - ivDrag.x, dy = e.clientY - ivDrag.y;
-  if (Math.abs(dx) + Math.abs(dy) > 3) ivMoved = true;
-  ivX = ivDrag.ox + dx;
-  ivY = ivDrag.oy + dy;
-  ivApply();
-});
-function ivEndDrag() { ivDrag = null; ivStage.classList.remove("dragging"); }
-ivStage.addEventListener("pointerup", ivEndDrag);
-ivStage.addEventListener("pointercancel", ivEndDrag);
-ivStage.addEventListener("dblclick", (e) => {
-  if (ivScale > 1.01) ivReset();
-  else ivZoomAt(2.5, e.clientX, e.clientY);
-});
+$("ivClose").onclick = closeImageViewer;
+$("ivReset").onclick = ivReset;
+$("ivZoomIn").onclick = () => ivZoomCenter(1.25);
+$("ivZoomOut").onclick = () => ivZoomCenter(0.8);
+if ($("ivPrev")) $("ivPrev").onclick = ivPrev;
+if ($("ivNext")) $("ivNext").onclick = ivNext;
+if ($("ivAddChat")) $("ivAddChat").onclick = async () => {
+  const cur = ivList[ivIndex];
+  if (!cur) return;
+  try {
+    const res = await fetch(cur.src, { credentials: "include" });
+    const blob = await res.blob();
+    const name = cur.name || (typeof guessFileName === "function" ? guessFileName(cur.src, "image") : "image.png");
+    const file = new File([blob], name, { type: blob.type || "image/png" });
+    if (typeof addFiles === "function") addFiles([file]);
+    showToast("已添加到对话");
+  } catch (e) { showToast("添加失败：" + e.message, true); }
+};
 document.addEventListener("keydown", (e) => {
   if (!imgViewer.classList.contains("show")) return;
   if (e.key === "Escape") closeImageViewer();
+  else if (e.key === "ArrowLeft") { e.preventDefault(); ivPrev(); }
+  else if (e.key === "ArrowRight") { e.preventDefault(); ivNext(); }
   else if (e.key === "+" || e.key === "=") { e.preventDefault(); ivZoomCenter(1.25); }
   else if (e.key === "-") { e.preventDefault(); ivZoomCenter(0.8); }
   else if (e.key === "0") { e.preventDefault(); ivReset(); }
 });
+
+function ivGalleryFrom(container, img) {
+  if (!container || !container.querySelectorAll) return null;
+  const imgs = Array.from(container.querySelectorAll("img")).filter((im) => {
+    if (im.closest(".msg-avatar, .avatar, .avatar-preview")) return false;
+    return !!(im.currentSrc || im.src);
+  });
+  if (!imgs.length) return null;
+  const list = imgs.map((im) => ({ src: im.currentSrc || im.src, name: im.getAttribute("alt") || "" }));
+  let idx = imgs.indexOf(img);
+  if (idx < 0) idx = 0;
+  return { list: list, idx: idx };
+}
 function handleImageClick(e) {
   const img = e.target && e.target.closest ? e.target.closest("img") : null;
   if (!img) return;
@@ -86,7 +225,10 @@ function handleImageClick(e) {
   if (!src) return;
   e.preventDefault();
   e.stopPropagation();
-  openImageViewer(src, img.getAttribute("alt") || "");
+  const container = img.closest("#messages") || img.closest("#attachments") ||
+    img.closest("#ocrList") || img.closest(".file-preview") || messagesEl;
+  const g = ivGalleryFrom(container, img);
+  openImageViewer(src, img.getAttribute("alt") || "", g ? g.list : null, g ? g.idx : 0);
 }
 messagesEl.addEventListener("click", handleImageClick, true);
 attachmentsEl.addEventListener("click", handleImageClick, true);
@@ -670,6 +812,28 @@ fsRange.oninput = () => applyFontSize(fsRange.value);
 astCenterToggle.onchange = () => applyAssistantCenter(astCenterToggle.checked);
 applyFontSize(localStorage.getItem("oc_font_size") || 15);
 applyAssistantCenter(localStorage.getItem("oc_ast_center") === "1");
+
+/* ============ 面板透明度 / 控件透明 ============ */
+const glassRange = $("glassRange");
+const glassVal = $("glassVal");
+const glassControlsToggle = $("glassControlsToggle");
+function applyGlassAlpha(v) {
+  const n = Math.min(100, Math.max(0, parseInt(v, 10)));
+  const pct = isFinite(n) ? n : 100;
+  document.documentElement.style.setProperty("--panel-alpha", String(pct / 100));
+  try { localStorage.setItem("oc_panel_alpha", String(pct)); } catch (e) { /* ignore */ }
+  if (glassVal) glassVal.textContent = pct + "%";
+  if (glassRange) glassRange.value = String(pct);
+}
+function applyGlassControls(on) {
+  document.body.classList.toggle("glass-controls", !!on);
+  if (glassControlsToggle) glassControlsToggle.checked = !!on;
+  try { localStorage.setItem("oc_glass_controls", on ? "1" : "0"); } catch (e) { /* ignore */ }
+}
+if (glassRange) glassRange.oninput = () => applyGlassAlpha(glassRange.value);
+if (glassControlsToggle) glassControlsToggle.onchange = () => applyGlassControls(glassControlsToggle.checked);
+applyGlassAlpha(localStorage.getItem("oc_panel_alpha") || 100);
+applyGlassControls(localStorage.getItem("oc_glass_controls") === "1");
 
 const imgCompressToggle = $("imgCompressToggle");
 function applyImgCompress(on) {

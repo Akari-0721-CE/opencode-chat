@@ -8,10 +8,19 @@ release/.cache/
 tools/rcedit-*.exe
 node_modules/
 *.zip
+*.apk
+
+# 安卓工程构建产物
+android/build/
+android/debug.keystore
+android/local.properties
 
 # 敏感数据（密钥、令牌、本机配置）
 secrets.json
 profile.json
+remote.json
+server.json
+server-active.json
 auth.json
 opencode-install.json
 .env

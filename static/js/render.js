@@ -101,6 +101,7 @@ function showPlaceholder(text) {
   d.textContent = text;
   messagesEl.appendChild(d);
   if (typeof updateScrollBottom === "function") updateScrollBottom();
+  if (typeof window.__ocShowTopbar === "function") window.__ocShowTopbar();
 }
 
 function appendNotice(text, isError) {
@@ -115,7 +116,7 @@ function appendNotice(text, isError) {
   bubble.textContent = text;
   wrap.append(role, bubble);
   messagesEl.appendChild(wrap);
-  scrollBottom(true);
+  scrollBottom();
 }
 function messageErrorText(info) {
   const e = info && info.error;
@@ -158,7 +159,85 @@ function markMsgEnter(wrap) {
   setTimeout(() => { try { wrap.classList.remove("msg-enter"); } catch (e) { /* ignore */ } }, 400);
 }
 
+/* 判断消息是否应在界面显示：用户消息若没有任何可见 part（例如 opencode 内部
+   的 compaction 消息只含 compaction part）则隐藏；助手消息未完成时不隐藏。 */
+function partVisible(p) {
+  if (!p) return false;
+  if (p.type === "text") return !p.synthetic && !!(p.text && String(p.text).trim());
+  if (p.type === "file" || p.type === "tool" || p.type === "reasoning") return true;
+  return false;
+}
+function messageVisible(info, parts) {
+  if (!info) return false;
+  if (info.error) return true;
+  const list = Array.isArray(parts) ? parts : [];
+  for (const p of list) if (partVisible(p)) return true;
+  if (info.role === "user") return false;
+  if (!(info.time && info.time.completed)) return true;
+  return false;
+}
+
+/* 按消息 id（opencode 的 id 单调递增）插入到正确位置，避免事件乱序时
+   新消息被追加到列表末尾（看起来像「助手答完后用户又发了一遍」）。 */
+function placeMessageEl(wrap) {
+  const parent = renderMount || messagesEl;
+  const id = (wrap.dataset && wrap.dataset.id) || "";
+  let ref = null;
+  if (id && parent.querySelectorAll) {
+    const nodes = parent.querySelectorAll(".msg[data-id]");
+    for (let i = 0; i < nodes.length; i++) {
+      const nid = (nodes[i].dataset && nodes[i].dataset.id) || "";
+      if (nid && nid > id) { ref = nodes[i]; break; }
+    }
+  }
+  if (ref) parent.insertBefore(wrap, ref);
+  else parent.appendChild(wrap);
+}
+
+/* 事件可能在 message.updated 之前先送来 part，此时先建了一个助手占位；
+   等真正的 role 到达后把占位修正过来，避免「用户消息被当成模型输出」。 */
+function setMessageRole(entry, role) {
+  if (!entry || !entry.el || entry.role === role) { if (entry) entry.role = role; return; }
+  entry.role = role;
+  const wrap = entry.el;
+  wrap.dataset.role = role;
+  if (wrap.classList && wrap.classList.remove) {
+    wrap.classList.remove("user", "assistant");
+    wrap.classList.add(role === "user" ? "user" : "assistant");
+  }
+  const roleEl = wrap.querySelector(".role");
+  if (roleEl) fillRole(roleEl, role);
+  const oldActions = wrap.querySelector(".msg-actions");
+  if (oldActions && oldActions.remove) oldActions.remove();
+  attachMessageActions(wrap, role);
+  wrap.querySelectorAll(".bubble").forEach((b) => {
+    if (b.classList && b.classList.contains("ver-old")) return;
+    const raw = b.__raw !== undefined ? b.__raw : b.textContent;
+    if (role === "user") {
+      applyUserStamp(b, raw);
+    } else {
+      const prev = b.previousElementSibling;
+      if (prev && prev.classList && prev.classList.contains("msg-stamp")) prev.remove();
+      b.__raw = raw;
+      renderMarkdown(b, b.__raw);
+    }
+  });
+}
+
+function hideMessageEl(id) {
+  if (!id) return;
+  hiddenMsgIds.add(id);
+  const entry = msgEls[id];
+  if (entry && entry.el && entry.el.remove) entry.el.remove();
+  delete msgEls[id];
+  for (const pid in partEls) {
+    const pe = partEls[pid];
+    if (pe && pe.__msgId === id) delete partEls[pid];
+  }
+}
+
 function ensureMessageById(id) {
+  if (hiddenMsgIds.has(id)) return null;
   if (msgEls[id]) return msgEls[id];
   const wrap = document.createElement("div");
   wrap.className = "msg assistant";
@@ -170,14 +249,21 @@ function ensureMessageById(id) {
   wrap.appendChild(role);
   attachMessageActions(wrap, "assistant");
   markMsgEnter(wrap);
-  (renderMount || messagesEl).appendChild(wrap);
-  msgEls[id] = { el: wrap, role: "assistant" };
+  placeMessageEl(wrap);
+  msgEls[id] = { el: wrap, role: "assistant", roleKnown: false };
   return msgEls[id];
 }
 
 function ensureMessageEl(info) {
   const id = info.id;
-  if (msgEls[id]) return msgEls[id];
+  const existing = msgEls[id];
+  if (existing) {
+    if (existing.role !== info.role) setMessageRole(existing, info.role);
+    if (!existing.info) existing.info = info;
+    existing.roleKnown = true;
+    return existing;
+  }
+  if (hiddenMsgIds.has(id)) return null;
   const wrap = document.createElement("div");
   wrap.className = "msg " + (info.role === "user" ? "user" : "assistant");
   wrap.dataset.id = id;
@@ -188,8 +274,8 @@ function ensureMessageEl(info) {
   wrap.appendChild(role);
   attachMessageActions(wrap, info.role);
   markMsgEnter(wrap);
-  (renderMount || messagesEl).appendChild(wrap);
-  msgEls[id] = { el: wrap, role: info.role, info: info };
+  placeMessageEl(wrap);
+  msgEls[id] = { el: wrap, role: info.role, roleKnown: true, info: info };
   return msgEls[id];
 }
 
@@ -278,7 +364,9 @@ function markLastAssistant() {
 function ensurePartEl(part) {
   const id = part.id;
   if (partEls[id]) return partEls[id];
-  const holder = ensureMessageById(part.messageID).el;
+  const holderEntry = ensureMessageById(part.messageID);
+  if (!holderEntry) return null;
+  const holder = holderEntry.el;
   let el = null;
   if (part.type === "reasoning") {
     const label = document.createElement("div");
@@ -323,12 +411,18 @@ function ensurePartEl(part) {
     name.className = "a-name";
     name.textContent = part.filename || part.mime || "文件";
     box.appendChild(name);
+    if (part.url) {
+      box.style.cursor = "pointer";
+      box.title = "点击查看 / 打开";
+      box.onclick = () => { if (typeof openMessageFile === "function") openMessageFile(part); };
+    }
     el = box;
     holder.appendChild(el);
   } else {
     return null;
   }
   partEls[id] = el;
+  el.__msgId = part.messageID;
   return el;
 }
 
@@ -575,25 +669,35 @@ function updateTool(toolEl, part) {
 }
 
 function renderMessage(info, parts) {
+  const list = parts || [];
+  if (!messageVisible(info, list)) { hiddenMsgIds.add(info.id); return null; }
   const holder = ensureMessageEl(info);
+  if (!holder) return null;
   updateTokenBadge(info);
-  for (const part of parts || []) {
+  for (const part of list) {
+    if (typeof recordPartTiming === "function") recordPartTiming(part);
     if (part.type === "text") {
+      if (part.synthetic) continue; /* opencode 内部合成文本（如「Called the Read tool…」）不展示 */
       const el = ensurePartEl(part);
-      if (info.role === "user") { applyUserStamp(el, part.text || ""); }
-      else { el.__raw = part.text || ""; renderMarkdown(el, el.__raw); }
+      if (!el) continue;
+      el.__raw = part.text || "";
+      if (info.role === "user") applyUserStamp(el, el.__raw);
+      else renderMarkdown(el, el.__raw);
     } else if (part.type === "reasoning") {
       const el = ensurePartEl(part);
+      if (!el) continue;
       el.__raw = part.text || "";
       el.textContent = el.__raw;
     } else if (part.type === "tool") {
       const el = ensurePartEl(part);
+      if (!el) continue;
       updateTool(el, part);
     } else if (part.type === "file") {
       ensurePartEl(part);
     }
   }
   renderMessageError(holder, info);
+  if (info.role === "assistant" && typeof applyHistoryTiming === "function") applyHistoryTiming(info);
   if (info.role === "assistant") setupVersionNav(holder, precedingUserText(holder.el));
   if (info.role === "user" && typeof maybeAttachLocalOcrImages === "function") maybeAttachLocalOcrImages(holder);
   return holder;

@@ -272,6 +272,7 @@ let dirCurrent = "";
 let dirHome = "";
 function parentPath(p) {
   p = String(p).replace(/[\\/]+$/, "");
+  if (/^[A-Za-z]:$/.test(p)) return p + "\\";  // 盘符根：上级仍是自身
   const i = Math.max(p.lastIndexOf("\\"), p.lastIndexOf("/"));
   if (i < 0) return p;
   if (i <= 2 && /^[A-Za-z]:$/.test(p.slice(0, i + 1))) return p.slice(0, 3);
@@ -280,7 +281,8 @@ function parentPath(p) {
   if (/^[A-Za-z]:$/.test(parent)) return parent + "\\";
   return parent;
 }
-async function openDirBrowser(startAt) {
+let dirChooseCb = null;
+async function openDirBrowser(startAt, opts) {
   if (!dirHome) {
     if (homeDir) {
       dirHome = homeDir;
@@ -291,6 +293,9 @@ async function openDirBrowser(startAt) {
       } catch (e) { dirHome = ""; }
     }
   }
+  opts = opts || {};
+  dirChooseCb = (typeof opts.onChoose === "function") ? opts.onChoose : null;
+  if ($("dirTitle")) $("dirTitle").textContent = opts.title || "选择工作区目录";
   dirCurrent = startAt || dirHome || "C:\\";
   $("dirMask").classList.add("show");
   await loadDirList();
@@ -325,11 +330,14 @@ async function loadDirList() {
     listEl.appendChild(item);
   }
 }
-$("dirCancel").onclick = () => $("dirMask").classList.remove("show");
+$("dirCancel").onclick = () => { dirChooseCb = null; $("dirMask").classList.remove("show"); };
 $("dirChoose").onclick = () => {
+  const cb = dirChooseCb;
+  dirChooseCb = null;
+  $("dirMask").classList.remove("show");
+  if (cb) { cb(dirCurrent); return; }
   $("astDir").value = dirCurrent;
   astDirAuto = false;
-  $("dirMask").classList.remove("show");
 };
 $("astBrowse").onclick = () => openDirBrowser($("astDir").value.trim() || null);
 
@@ -373,6 +381,10 @@ function providerConnected(id) {
   return !!(p && p.key);
 }
 async function openProviderManager() {
+  if (typeof isRemote === "function" && isRemote()) {
+    showToast(typeof t === "function" ? t("远程模式下不可管理服务商") : "远程模式下不可管理服务商", true);
+    return;
+  }
   $("providerFilter").value = "";
   $("providerMask").classList.add("show");
   $("providerList").innerHTML = '<div class="prov-empty">加载中…</div>';

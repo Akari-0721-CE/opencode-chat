@@ -1,8 +1,12 @@
 {
   "name": "opencode chat",
   "short_name": "opencode",
+  "id": "/",
   "start_url": "/",
-  "display": "standalone",
+  "scope": "/",
+  "display": "fullscreen",
+  "display_override": ["fullscreen", "standalone", "minimal-ui"],
+  "orientation": "any",
   "background_color": "#202123",
   "theme_color": "#10a37f",
   "icons": [

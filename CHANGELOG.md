@@ -1,23 +1,104 @@
 # opencode 自建前端 · 版本说明
 
-- 版本：v0.2.0
-- 日期：2026-09-12
+- 版本：v0.3.0
+- 日期：2026-09-27
 - 组成：Python 代理 + 多文件前端 + opencode 插件 + 发布工程
 
-## 未发布（修复：杀软 HTTPS 扫描导致模型调用证书错误）
+## v0.3.0（局域网远程访问 + 移动端适配 + 端口自定义 + 会话导出 + 媒体库 + 本地模型 + 文件发送/重复发言/空消息修复）
 
-- **问题**：Kaspersky 等杀毒软件的「HTTPS 扫描」会用其根证书做中间人重签。Windows 信任该根证书，但 opencode 使用的 Node/Bun 运行时只信任自带 CA 库，导致模型调用报 `unknown certificate verification error`（个别请求表现为 `fetch failed`）。
-- **修复**：`release/launcher.py` 新增 `ensure_extra_ca_certs()`，启动时把 Windows 受信任根证书（ROOT/CA）导出为 `~/.config/opencode-chat/node-extra-ca.pem` 并设置 `NODE_EXTRA_CA_CERTS`；`server.py` 的「重启 opencode」也通过 `node_tls_env()` 注入同一变量，覆盖自动重启路径。
-- **验证**：导出后 Node `fetch('https://api.deepseek.com')` 由证书错误变为成功（返回 401）；opencode 二进制内含 `NODE_EXTRA_CA_CERTS`/`SSL_CERT_FILE` 处理，证实其 Bun 运行时支持。
-- 生效方式：需重启本程序（确保旧 `opencode.exe` 已结束）；发布工程改动需重新打包。
+- **修复文件发送 / 重复发言 / 空消息与角色错位**：
+  - **文本类文件（JSON 等）发不出去**：opencode 仅对 `mime=text/plain` 的 data URL 做「解码为文本」，其它文本 mime（`application/json`、`text/csv`…）会被当作二进制附件被模型拒绝。`attachments.js` 新增 `isTextLike` / `sendMimeFor`（按 mime 或扩展名判定），`send.js` 发送文本类附件时统一按 `text/plain` 提交，JSON / CSV / XML / 代码等均可正常发送。
+  - **重复发送上一条消息**：某些输入法 / 触屏会在极短时间内把回车或发送动作触发两次，导致同一条消息被重复 POST。前端 `send.js` 增加内容签名去重（成功发送后 1.5s 内屏蔽完全相同的再次发送），`server.py` 代理对同一会话、内容相同的 `prompt_async` 在 1s 内只放行一次（`PROMPT_DEDUP`）。
+  - **空消息 / 角色错位**：opencode 的内部 compaction 用户消息（仅含 `compaction` part）此前会渲染成空气泡——现用 `hiddenMsgIds` / `messageVisible` / `hideMessageEl` 过滤；opencode 生成的合成文本（如「Called the Read tool…」）不再显示。另外修复事件乱序：`message.part.updated` 先于 `message.updated` 到达时占位消息角色错误的问题（`setMessageRole` 到达后修正），并按消息 id 顺序插入（`placeMessageEl`），避免用户消息被追加到底部而看起来像「助手答完后用户又发了一遍」。纯前端 Ctrl+F5；`server.py` 改动需重开程序。测试：前端 77 项（新增 5 项）+ server 29 项全绿。
 
-## 未发布（开源与发布准备）
+- **修复「unknown certificate verification error」反复出现（真正的根因）**：深入排查确认证书链本身有效——`opencode.ai` 由公开 CA 签发（`opencode.ai ← WE1 ← GTS Root R4(交叉签名) ← GlobalSign Root CA`），Python/Bun/Node 用系统根或 `NODE_EXTRA_CA_CERTS` 均能校验通过，`opencode.exe` 内嵌的是 **Bun 1.3.14**。真正的现象是：该错误**集中在 opencode 启动后头几分钟**、之后自行恢复，属 Bun 把「TLS 握手被中途重置（杀软 HTTPS 扫描 / 网络抖动）」误报为证书错误（上游 bun#31949）；而 opencode 的 `SessionRetry.retryable` 只重试 APIError，**不会重试这类瞬时错误**，于是直接抛给用户。修复：在插件 `base-override.ts` 的 `config` 钩子给每个 provider 注入带重试的 `fetch`（`retryingFetch`）——仅对网络/TLS 类异常重试（最多 4 次、1.5s×n 退避），HTTP 错误响应不受影响，`Request` 或不可重放 body 只尝试一次以避免重复请求。**需重装插件（`install-plugin.bat`）并重启 opencode**。
 
-- **开源许可**：新增根目录 `LICENSE`（MIT）；`README` 增加「声明」（个人自用练习项目、非官方、与上游无关联）与「开源许可与第三方声明」章节。
-- **第三方声明**：新增 `THIRD-PARTY-NOTICES.md`，列明分发的第三方组件（marked / DOMPurify / KaTeX / highlight.js）及运行时获取的组件（opencode / 便携 Python）与构建期工具（rcedit）的许可。
-- **安全约定**：新增 `SECURITY.md`；新增 `.gitattributes` 统一换行；`.gitignore` 补全密钥 / 临时 / 编辑器忽略项。
-- **发布打包**：`release/build.ps1` 将 `LICENSE` 与 `THIRD-PARTY-NOTICES.md` 一并复制进发布包，确保分发合规。
-- **敏感数据核查**：确认 git 历史与跟踪文件不含密钥、令牌或本机敏感路径；`app-profile/` 等本机数据均在忽略之列。
+- **修复「已在运行的非本程序 opencode 不带证书」导致证书错误反复出现**：上版把 `NODE_EXTRA_CA_CERTS` 持久写入用户环境后，仅在**新进程**生效；若 4096 上已有一个由**旧启动器 / 手工**拉起的 `opencode serve`（命令行缺 `--hostname 127.0.0.1`，也就没有证书环境），程序启动时会**复用它**而不再注入证书，于是 `unknown certificate verification error` 反复出现。现新增自愈：`server.py` `pid_command_line()` / `opencode_is_managed()`（判定 4096 上的 opencode 是否带本程序标记与证书环境，取不到命令行时一律当作已托管以免误杀）+ `ensure_managed_opencode()` 并在 `main()` 启动后于后台线程调用；`release/launcher.py` 在复用已运行的 opencode 前也调用 `ensure_managed_opencode()`，非托管则结束并按带证书环境的方式重启。**注**：`--hostname` 是本程序的启动标记，非托管进程会被结束重启（会话历史在 opencode 存储中，不会丢）。测试：前端 73 项 + server **29** 项（新增 3 项）全绿。
+
+- **媒体库：查看 / 管理所有本地媒体内容**（纯前端，Ctrl+F5）：顶栏新增「媒体库」按钮（移动端在「更多」二级菜单），聚合**所有会话历史**中「你发送」与「助手贴出」的图片 / 文件——来源为 opencode 消息里的 `file` part（用户附件）与 `tool.state.attachments`（助手工具产出）。支持按名称 / 会话搜索、按类型（图片 / 视频 / 音频 / PDF / 其它文件）与来源（我发送 / 助手）筛选；图片以缩略图网格展示、点击进入现有图片查看器（可左右切换），其它文件以文件卡片展示。每项可「存档到本机」（写入 IndexedDB `oc_media_store`，清理历史后仍保留，可单独删除 / 一键清空）、「添加到对话」、「OCR」、「保存 / 分享到手机」（安卓）、「定位到原消息」（跳转对应助手 / 会话并高亮该消息）。实现位于新增 `static/js/medialib.js`（纯函数 `mediaKindOf` / `mediaItemKey` / `mediaItemsFromParts` / `mediaFilter` / `mediaArchiveSummary` + 渐进式扫描 `mlScanAll` + 存档 CRUD），弹窗与样式见 `index.html` / `app.css`，可访问性与 Escape 关闭接入 `core.js`。**仅本机浏览器存档，不写入服务端**。测试：前端纯函数 **73** 项（新增 7 项）+ server **26** 项全绿。
+
+- **本地模型（GGUF / llama.cpp）**：设置 →「本地模型（GGUF）」新增独立面板，用本地 llama.cpp 跑 GGUF 模型，离线可用；有 NVIDIA 显卡可选 CUDA 构建自动加速。后端 `server.py` 新增本地 LLM 管理：配置存 `~/.config/opencode-chat/local-llm.json`（模型路径 / 别名 / 端口 / 上下文 / GPU 层数 / 线程 / `--jinja` / 额外参数 / 随程序自启），运行时从 llama.cpp 官方 GitHub Releases 下载 Windows 构建（`llama-b*-bin-win-{cpu,cuda-12.4}-x64.zip`，CUDA 附带 cudart 包，整包安全解压到 `runtime/llama` 或用户配置目录），`llama-server` 只监听 `127.0.0.1` 并暴露 OpenAI 兼容 `/v1`；启动后自动把该地址写为自定义 provider（`npm=@ai-sdk/openai-compatible`、dummy key）并重启 opencode，模型随即出现在顶栏。新端点 `GET/POST /api/_local`、`POST /api/_local/{install,start,stop,scan}` 全部**仅本机**；跨中间层重启用 `llama.pid` 侧车识别正在加载的进程，避免重复拉起。插件 `base-override.ts` 的 `config` 钩子支持读取 secrets 条目里的 `npm` / `name`（否则自定义 provider 无法被 opencode 识别）。前端新增 `static/js/local.js`（纯函数 `ggufAlias` / `localRuntimeLabel` / `localProgressText`）+ 弹窗与样式；目录浏览器 `openDirBrowser` 泛化为可传回调（用于选模型文件夹）。**需重装插件并重启 opencode 生效**（重开程序会自动装，或跑 `install-plugin.bat`）。测试：前端纯函数 **66** 项 + server **26** 项全绿。
+
+- **回复分段用时统计：思考 / 调用 / 生成 / 合计**（纯前端，Ctrl+F5）：此前每条助手消息只显示一个总「用时」。现改为一条 `.msg-timing`，按消息分片的时间戳**分开统计本轮回复**——**思考**（`reasoning` 分片 `time`）、**调用**（`tool` 分片 `state.time`）、**生成**（`text` 分片 `time`）各自累计，末位**合计**为**墙钟总用时**（起点=助手消息创建，终点=「模型结束工作」或（被中止时）「用户下一次发送消息」，历史消息用下一条用户消息时间；两者取先到者）。生成过程中随 `tickDurations` 每 100ms 实时刷新并在末尾带「…」，回复结束由 `finalizeDurations()` 冻结。实现位于 `static/js/settings.js`（纯函数 `partTiming` / `sumPartTimings` / `entryTotalMs` + `nextUserCreatedAfter` / `recordPartTiming` / `renderTiming` / `freezeTiming` / `applyHistoryTiming`），分片事件在 `static/js/events.js` 与 `static/js/render.js` 接入；`app.css` 补样式与居中规则。纯前端改动，**Ctrl+F5** 生效；测试：前端纯函数单测 **63** 项（新增 `partTiming` / `sumPartTimings` / `entryTotalMs` 3 项）+ server 21 项全绿。
+
+- **修复「手工启动的 opencode 不带证书」导致证书错误反复出现**：此前的证书修复只在**本程序拉起的 opencode** 上注入 `NODE_EXTRA_CA_CERTS`；用户若自行执行 `opencode serve`（或其它方式启动），进程不带该变量，`unknown certificate verification error` 就会反复出现（现场进程父级为 `cmd.exe /c opencode serve --port 4096`，既无 `--hostname` 也无证书环境，本程序 `server.py` 另在 8000 端口，两者可区分）。现把 `NODE_EXTRA_CA_CERTS` **写入当前用户持久环境**（`HKCU\Environment`）并广播 `WM_SETTINGCHANGE`：`release/launcher.py` 新增 `persist_user_env()` 并在 `ensure_extra_ca_certs()` 成功后调用；`server.py` 新增 `persist_ca_env()` 并在 `main()` 启动时调用。此后无论以何种方式启动 opencode 都会自动继承证书（变量固定指向 `~/.config/opencode-chat/node-extra-ca.pem`，文件不存在时不写入以免 TLS 直接失败）。**需重启 opencode 生效**，已在运行的旧进程不受影响。测试：前端 63 项 + server 21 项全绿。
+
+- **滚动跟随改为「空闲几秒后自动恢复」**（纯前端，Ctrl+F5）：上版「一旦离开底部就永久停止跟随」在输出过程中会让人觉得**再也滚不动 / 屏幕不再跟着走**。`static/js/events.js` 新增 `RESUME_IDLE_MS`（3s）与 `lastUserScroll`：用户上翻后先暂停跟随（方便查看历史），**停止滚动满 3 秒**即恢复跟随新输出；用户滚动 / 翻页会不断刷新该计时，正在阅读时不会被抢滚动。`progScroll` 标志用于区分程序自动贴底与用户真实滚动，避免把自动跟滚误当成用户操作而重置计时。`static/js/send.js` 的 `scroll` 监听同步更新计时。
+
+- **修复「高质量（水光）」下移动端布局崩坏**（纯前端，Ctrl+F5）：`app.css` 里为水光伪元素 `::after` 定位而写的 `body.quality-high .sidebar { position: relative; }` 优先级高于窄屏 `@media (max-width: 820px)` 的 `.sidebar { position: fixed; }`，导致开着「高质量」档时手机端侧栏不脱流、仍占 `84vw`，把主区挤成屏幕右侧一条（顶栏挤到右侧、输入栏被 `flex-wrap` 折成竖排、键盘弹出后尤为明显）。在移动端媒体查询内补一条同选择器的 `body.quality-high .sidebar { position: fixed; }` 覆盖即可（`fixed` 本身即为 `::after` 的定位上下文，水光效果不受影响）。纯 CSS，**Ctrl+F5**。
+
+- **视觉要素统一（令牌化收口）**（纯前端，Ctrl+F5）：把长期散落的硬编码收进设计变量，消除「同一类元素长得不一样」的廉价感——
+  - **控件表面令牌**：新增 `--control-bg` / `--control-border`（亮/暗各自取值），输入框 / 下拉 / 搜索框 / 次级按钮 / 行内操作统一改用它，不再混用 `--panel-bg` / `--bg` / `--tool-bg`（原先同类控件底色不一致）。删除随之空置的 `--panel-bg`。
+  - **圆角全部走令牌**：`8px→--r-sm`（46 处）、`6px→--r-xs`（17 处）、`5px/7px→--r-xs/--r-sm`、`10px/12px→--r-md`（10 处）；保留 4px 徽标 / 2–3px 进度条 / 999px 胶囊 / 18px 移动端抽屉等确有语义的小圆角。
+  - **次级按钮统一**：`.btn-cancel` / `.q-reject` / `.choice-btn` / `.prov-action` 归入同一条「描边 + `--control-bg` + 悬停 `--hover`」规则，去掉 `.btn-cancel` 的 `!important` 与 `--tool-bg` 特例。
+  - **修复重复定义**：`.toast` 在 `app.css` 里被定义两次（`8px` 圆角 + 旧阴影 vs `--r-md` + `--shadow-lg`），后者生效、前者是死代码；已合并为单一定义（定位/动画留一处，外观统一走 `--modal-bg` + `--shadow-lg` + `--r-md`）。
+
+- **可选的毛玻璃透明度 + 设置「个性化」二级菜单**（纯前端，Ctrl+F5）：
+  - **色散收进玻璃内部 + 厚度感**：色散不再用「向外扩一圈的 `inset 1px` shadow」，改为**独立伪元素层**（`::before`，`inset:0` + `border-radius:inherit`，`pointer-events:none`）只贴面板内侧四周画一圈 1.5px 羽毛彩边（青 / 品红 / 琥珀 / 蓝紫）——**边缘清晰、不吃面板内部、也不漏到面板背后的背景上**。同时把顶部 / 底部「内壁」从 1px 亮线改成**带衰减的多段渐变**（`8–34px` 内迅速淡出）+ 极浅 0.5px 冷调外 rim，玻璃立刻有了**倒角厚度**，不再像贴在背景上的一层膜。错误 Toast 不叠玻璃层。
+  - **水波扫过重做（去塑料贴图感）**：原先是一条高光带平移扫过（`oc-water-sweep`），有薄片 / 塑料贴图的廉价感。现改为**呼吸式漫射微光**（`oc-water-breathe`，22s）：面板内数层极低透明度的 `radial-gradient` 大面积柔光，配 `radial-gradient` 羽化 `mask`，**只做整体 `opacity` 起伏，不产生任何可见边界**；暗色模式单独调淡。`prefers-reduced-motion` 下静止并隐藏。
+  - **面板透明度**（个性化 · 滑杆 `#glassRange`，0–100%，默认 100%）：CSS 变量 `--panel-alpha` 统一缩放侧栏 / 顶栏 / 输入栏 / 弹窗 / 弹层 / Toast 的背景 alpha；调低即更通透、折射更明显。设置存 `oc_panel_alpha`。
+  - **控件透明**（个性化 · 开关 `#glassControlsToggle`）：开启后给 `body` 加 `glass-controls`，让原本不透明的输入框 / 下拉框 / 搜索框 / 模型选择等也随 `--panel-alpha` 变成毛玻璃；仅「高质量」档生效，不支持 `backdrop-filter` 时自动回退为不透明。设置存 `oc_glass_controls`。
+  - **设置结构整理**：新增「个性化」二级菜单（`#personalizeToggle` + `#personalizeGroup`，「我的设置」风格——描述 + 右侧箭头，展开状态存 `oc_personalize`，设置内搜索时自动展开）；把**外观 / 语言 / 主题色 / 背景 / 背景遮罩 / 字体大小 / 助手文本居中 / 渲染质量**移入该分组，顶层只保留高频项（桌面通知 / Token 计数 / 新手向导 / 服务商 / 端口 / 局域网）。渲染质量提示补上「水光折射/色散」。
+
+- **高质量毛玻璃升级：水光折射 + 边缘色散 + 底面磨砂**（纯前端，Ctrl+F5）：在「设置 → 渲染质量 → 高质量」下进一步强化玻璃质感——
+  - **水光折射层**：`index.html` 新增 `#glassWater`，仅在高质量档显示（`body.quality-high #glassWater`）。它是一层固定在背景与面板之间、缓慢漂移（`oc-water-drift`，30s，仅 `transform`）的彩色柔光（青 / 蓝 / 紫 / 珊瑚四团 `radial-gradient` + `blur` + `soft-light`）；毛玻璃通过 `backdrop-filter` **真实采样**这层动态光源，从而透出「一层水」的通透折射感，而非静态贴图。低性能 / 减少动态效果下自动关闭或静止。
+  - **玻璃本体**：高质量档的侧栏 / 顶栏 / 弹窗 / 模型与上下文浮层 / 输入栏 / Toast / 拖拽遮罩统一改为更强的折射滤镜（`blur(26px) saturate(1.65) brightness/contrast`），叠加**顶部水光高光 + 底部磨砂雾感**（底面毛玻璃）与**左右边缘青品红轻微色散**（`inset 1px/-1px 0 0` 彩色内阴影），并保留原有立体阴影；暗色模式单独调淡，错误 Toast 保持纯色。
+  - **侧栏水光扫过**：`body.quality-high .sidebar::after` 一道缓慢斜向镜面反射（`oc-water-sweep`，12s，`transform` 位移，不重绘毛玻璃）。
+  - `app.css` 的 `prefers-reduced-motion` 同步停用上述三处动画。前端纯 CSS/HTML，**Ctrl+F5** 生效。
+
+- **修复 opencode-go Kimi K2.x 长任务 400（插件）**：`plugin/base-override.ts` 的 `chat.params` 对 `opencode-go` 上的 Kimi K2.5 / K2.6 / K2.7 强制注入 `thinking:{type:"disabled"}`。根因是 opencode 在**工具调用轮重放历史时不回传 `reasoning_content`**，被 Kimi/Moonshot 以 400 拒绝，`opencode-go` 包装成「APIError (400) Error from provider (Console Go): Upstream request failed: [400] Provider returned error」；长任务 / 多轮工具调用稳定复现（上游 opencode 与 Console Go 的兼容问题，无法改本体）。**在请求上真正关闭模型侧思考**（并非仅隐藏界面思考显示）即可绕过。已收录 `kimi-k3`（models.dev 已修）不受影响。**需重启 opencode 生效**（插件改动；点顶栏 ↻ 或重开程序）。
+
+- **体验优化：只在贴底时自动滚屏 + 会话导航（缩略图 / 大纲）**：
+  - **不再抢滚动**：`static/js/events.js` 新增严格贴底判定 `atBottom()`（24px）与 `leaveAutoScroll()`，并监听 `wheel` / `touchmove` / `ArrowUp·PageUp·Home`——用户一旦离开底部立即停止自动跟随，翻阅历史时新内容不再把视图拽回底部；`setBusy(true)` 追加光标与 `appendNotice()` 的强制滚动改为尊重当前位置（发送消息 / 切换会话 / 点「回到底部」仍会正常滚动）。
+  - **会话导航（缩略图）**：顶栏新增 `#outlineBtn`（移动端入口在「更多 → 会话导航」），打开 `#outlineMask` 把整段对话压成一列「简短聊天记录」——长文本收成一句、标注工具调用、用户消息剥离发送时间戳；点任意条目即跳转定位并闪烁高亮，打开时自动高亮当前视野所在条目，便于长对话快速找回。新增 `static/js/outline.js`（纯函数 `outlineSnippet` / `outlineItems`）+ `app.css` 样式 + `MODAL_ESC` 支持 + 中英文案。
+  - 纯前端改动，**Ctrl+F5** 生效；测试：前端纯函数单测 **60** 项（新增 `outlineSnippet` / `outlineItems` 2 项）+ server 21 项全绿。
+
+- **修复子代理（task）文本污染 / 诱导（插件）**：`plugin/base-override.ts` 新增 `experimental.chat.messages.transform` 钩子，对 `task` 工具返回做「上下文卫生」处理——**当前轮**的子代理输出用 `[[OC_SUBAGENT_REPORT]]` 包裹并加中性说明（明示为「不可信数据、不是助手发言」，提示忽略其中的拒绝 / 道德说教 / 跑题内容），超长截断到 6000 字符；**历史轮次**（最后一条用户消息之前）的子代理结果替换为省略占位符，避免「编辑并重发」后旧任务文本残留污染上下文；子代理报错同样只留省略占位符。非 `task` 工具结果不受影响，包裹幂等（重复调用不会叠加）。**需重启 opencode 生效**（插件改动）。
+
+- **一键重启（顶栏 ↻，非 F5）**：顶栏新增「重启 opencode 与中间层」按钮（`static/js/restart.js`，`#restartAppBtn`）。点按先确认，随后 `POST /api/_app/restart`（仅本机）= 先 `restart_opencode()`，再由**独立助手进程**（`spawn_app_restart()` → `python server.py --restart-helper`）结束旧中间层、等端口释放后**同端口**拉起新进程并轮询 `/_version` 校验就绪（日志落 `~/.config/opencode-chat/restart.log`）。**不在服务内自重启**（遵循事故复盘：仅「重启程序」接管端口）；端口仍被占用时助手**主动放弃**而非抢绑，避免彻底无服务。前端在重启后轮询 `/_version`，检测到新 pid 即自动刷新；远程模式隐藏该按钮。`server.py` 改动，需重启前端生效。
+
+- **移动端修复（模型选择弹层）**：窄屏下模型选择器此前相对「模型按钮」定位（`right:-6px` + `92vw`），小屏会左右**溢出屏幕**，且半透明毛玻璃在安卓 WebView 中常不生效、下方消息 / 输入栏透出。现改为**相对视口满宽定位**（`position:fixed; left/right:10px`，落在顶栏下方）、**不透明背景**（`var(--bg)`）、按可见高度（`--app-h` − 顶栏 − 输入区）限高（最小 220px），避免顶到输入框与软键盘；另新增 `@supports not (backdrop-filter)` 兜底：不支持毛玻璃时所有玻璃面板（侧栏 / 顶栏 / 弹窗 / 弹层）自动改不透明，保证可读性。纯前端，**Ctrl+F5**。
+- **前端视觉统一（配色 / 质感令牌化）**：新增语义色设计变量 `--danger` / `--warn` / `--info` / `--success` / `--on-accent` 与中性表面层次 `--hover-weak` / `--hover` / `--hover-strong` / `--active`，替换全站散落的硬编码色值（危险红、待处理橙、运行蓝、成功绿以及各处的悬停底色），暗色模式语义色适度提亮以改善对比度；合并约 18 组 `body.dark` 冗余悬停覆盖；禁用态发送按钮改用「主题色 + 透明度」以适配任意主题色；上下文占用环（`settings.js`）改用 CSS 变量取色。纯前端，**Ctrl+F5** 生效。测试：前端 58 项 + server 18 项全绿。
+
+- **简易安卓 App（WebView 壳）**：新增 `android/` 工程——启动后填写 PC 局域网地址（可存密码自动登录），内嵌 WebView **全屏沉浸**加载网页端，允许明文 HTTP、返回键导航、支持网页 Fullscreen API 与文件选择（发图/附件）。含 `build.ps1`（aapt2 + javac + d8 + zipalign + apksigner 手动出包，**无需 Gradle/Android Studio**）与 `setup-sdk.ps1`（下载 Android SDK）。构建产物 `android/build/opencode-chat.apk`，并拷到 `static/opencode-chat.apk` 供手机经局域网直接下载安装。
+  - **v1.1**：加入**崩溃自捕获**（异常直接显示在屏幕上、可「分享错误」，并留存到下次启动），解决高版本 Android「黑屏闪退」定位难问题；用户确认可用。
+  - 工具链要点：需 **JDK 17–21**（JDK 25 下 d8 崩溃）与 **build-tools 35.0.0**（34.0.0 的 R8 处理匿名内部类会 NPE）。★ 实测本机 JDK 25 + build-tools 35.0.0 亦可出包（若 d8 报错再换 JDK 17–21）。
+  - `*.apk`、`android/build/`、`android/debug.keystore` 已加入 `.gitignore`。
+
+- **安卓端 v1.2：暗色模式与基础设置 + 移动端触屏优化 + 文件查看/上传**：
+  - **壳内原生设置**（`MainActivity.showSettingsDialog`，返回键菜单 / 网页顶栏「安卓设置」入口）：**暗色模式**（跟随系统 / 亮色 / 暗色，`uiMode` 变化即时生效）、**字号**（小 13 / 标准 15 / 大 18）、**保持屏幕常亮**、**沉浸全屏**（可关），以及清除缓存并刷新 / 重新加载 / 更换主机地址；设置存 `SharedPreferences`。
+  - **WebView ↔ 网页桥接** `window.OCAndroid`（`addJavascriptInterface`，仅对本程序主机地址生效）：`getSettings` / `openSettings` / `saveDataUrl`（保存或分享文件）/ `openExternal` / `shareText` / `toast`。网页 `mobile.js` 的 `applyNativeSettings()` 在 `onPageFinished` 与切换设置时应用主题与字号。
+  - **文件查看 / 保存 / 分享**：新增 `FileProviderLite`（自建 `content://` provider，无需 androidx），把缓存文件交给系统「保存 / 分享」面板；`setDownloadListener` 处理 blob/data（提示用查看器保存）与 http(s)（外部浏览器打开）；网页图片查看器新增「保存 / 分享到手机」按钮，消息文件气泡与附件支持点击查看 / 保存。
+  - **上传**：网页输入区新增「拍照上传」按钮（`capture="environment"`，仅安卓显示）；壳内 `onShowFileChooser` 识别 `isCaptureEnabled` 后**直接调用系统相机**（`MediaStore.ACTION_IMAGE_CAPTURE` + `FileProviderLite` 写入私有目录并回传 `content://`），普通文件选择仍走系统选择器，支持多选。
+  - **移动端触屏优化**（`app.css` + `mobile.js`）：`touch-action: manipulation` 去除点按延迟、透明点击高亮、禁止双击缩放；安全区（刘海 / 手势条）内边距；窄屏弹窗改**底部抽屉**、加大点按区域（≥42px）；**左边缘滑开 / 左滑关闭抽屉**手势；软键盘弹出时输入框自动滚入可视区（`visualViewport`）；滚动容器 `overscroll-behavior: contain`。
+  - APK：`android/build/opencode-chat.apk`（versionCode 3 / versionName 1.2，64.9 KB），已同步 `static/opencode-chat.apk` 供手机局域网下载。
+  - **触屏修复（真机反馈）**：①「打字盲打、看不见输入栏」——WebView edge-to-edge 下 `adjustResize` 失效、键盘盖住输入栏。**原生兜底**：`MainActivity.installImeInsets()` 监听 `WindowInsets.Type.ime()`，把 WebView 底边按键盘高度抬高（`bottomMargin`）；网页侧同时用 `visualViewport`/`innerHeight` 的较小值动态设置 `#app` 高度（`--app-h`），两条路径都会让输入栏位于键盘上方。②「顶部黑边巨大」——刘海/挖孔屏未声明切割模式；`styles.xml` 加 `android:windowLayoutInDisplayCutoutMode=shortEdges`，内容延伸进挖孔区。
+  - **端口预设 / 常用地址**：壳内 setup 拆成「IP + 端口」两栏，端口自动用**预设端口**（默认 8000，可在壳内「设置 → 默认端口」改），连接后记住最近 5 个地址（换行存 `SharedPreferences`），下次一键连接，无需重复填写。
+  - **移动端布局优化**：移动端顶栏改为**覆盖层**（`position:absolute` + `--topbar-h` 预留高度），向下滚动只做 `transform` 位移收起、向上/回顶/聚焦输入时显示，不再改变布局高度，**消除收起时偶发抽疯/抖动**；顶栏新增「更多」入口，把不常用的 全屏 / 搜索 / 设置 / 安卓设置 / 退出远程登录 收进**二级菜单**（底部弹层），顶栏只保留 菜单、模型选择、更多；消息区与气泡内边距更紧凑、输入区去掉上边框改柔和阴影。
+
+- **图片预览加强（相册式手势）+ 电脑文件浏览 / 复用**：
+  - **图片查看器**（`media.js`）：改为相册式——**双指捏合缩放、单指拖动、双击缩放、左右滑动切换上一张/下一张、下滑关闭**；工具栏显示「当前/总数」、左右箭头，支持键盘 ←/→；点击消息/附件/OCR 里的图片会收集同容器所有图片作为相册，可连续翻看。新增「添加到对话」把当前图片作为附件加入输入框（移动端另有「保存到手机」）。
+  - **电脑文件浏览**（`static/js/files.js`）：顶栏「电脑文件」/ 移动端「更多 → 电脑文件」打开；起点默认当前助手工作区，可逐级进入目录；**可切换磁盘（C:/D:…，走新增 `GET /api/_drives`）**；**可收藏常用文件夹**（★ 收藏当前目录、顶部「常用」一键直达、可移除，存 `oc_file_favs` 随 `profile.json` 同步）；点文件弹出操作——**预览**（图片进查看器、文本进预览框）、**添加到对话（作为附件）**、**插入路径到输入框**、**复制完整路径**、**保存/分享到手机**（安卓）。用于复用助手产出的成果。
+  - **服务端**：代理放行 `GET /file/content`（`PROXY_ALLOW_EXACT`），配合已有 `/file` 提供列目录 + 读内容；新增 `GET /api/_drives` 列出本机盘符（需登录）。**安全提示**：`/file/content` 可读取本机文件，仅对**已登录**的远程会话开放（与其余 `/api/*` 同级，需局域网访问密码）；不需要该功能可在 `PROXY_ALLOW_EXACT` 移除。**该改动需重启前端（server.py）生效。**
+  - 生效方式：纯前端改动刷新即可；`server.py` 改动**需重启本程序前端**才能读文件内容（列目录不受影响）。
+
+- **修复（重新补回）杀软 HTTPS 扫描导致的证书错误**：上一版「未提交」的修复在回滚中丢失，导致 `unknown certificate verification error` 复发。经排查确认：`api.deepseek.com` 的证书签发者为 **Kaspersky Anti-Virus Personal Root Certificate**（Kaspersky 的 HTTPS 中间人重签），而 opencode（Bun）只信任自带 CA 库。
+  - `server.py` 新增 `ensure_ca_pem()`（把 Windows ROOT/CA 根证书导出为 `~/.config/opencode-chat/node-extra-ca.pem`，超过 7 天自动刷新）与 `node_tls_env()`；`restart_opencode()` 用其启动，注入 `NODE_EXTRA_CA_CERTS`。
+  - `release/launcher.py` 恢复 `ensure_extra_ca_certs()`，在 `main()` 与 `start_opencode()` 调用。
+  - 验证：另起一个 opencode（不同端口）带 `NODE_EXTRA_CA_CERTS`，向 `deepseek/deepseek-v4-flash-vision-exp` 发消息正常返回（无证书错误），证实 Bun 支持该变量。
+  - 说明：已在运行的 opencode 不会被自动重启以注入变量——需在「服务商与模型」点「重启 opencode」，或结束 `opencode.exe` 后重开程序；否则需在杀软里关闭 HTTPS 扫描 / 排除 `opencode.exe`。
+
+- **局域网远程访问**：设置 →「局域网访问」开启并设置访问密码（至少 4 位），保存后**重启本程序**生效；同一局域网内的手机 / 平板 / 电脑用浏览器访问设置里显示的地址并登录即可。**本机 loopback 免密**。
+  - 服务端按配置绑定 `0.0.0.0`（开启且有密码）或 `127.0.0.1`；远程端仅开放对话核心，服务商密钥（`_secret`）、工作区迁移（`_move`）、`_profile` 写入、重启 opencode、远程管理配置等**仅本机可用**；`_profile` GET 供远程只读同步助手列表；`_mkdir` 供远程已登录用户（OCR / 翻译 / 托管临时目录需要）。
+  - 密码以加盐 PBKDF2 存 `remote.json`（不存明文）；远程登录换取 HttpOnly 会话 Cookie（内存态）。
+  - 同源校验改为「Origin 必须匹配 Host」，不再写死端口白名单。
+- **服务端口自定义**：设置 →「服务端口」（默认 8000，范围 `1024–65535`），存 `server.json`；优先级 `FRONT_PORT` 环境变量 > `server.json` > 8000。**保存后需重启本程序**，启动器据此绑定并打开界面。
+- **移动端适配 / 全屏**：窄屏（≤820px）侧栏改为抽屉（顶栏汉堡按钮 + 遮罩 + Esc 关闭），顶栏精简、输入区两行布局、弹窗适配、输入框 16px 防 iOS 缩放；顶栏加**全屏按钮**（`mobile.js`，支持网页 Fullscreen API）；`manifest.webmanifest` 改 `display: fullscreen` + iOS PWA meta（「添加到主屏幕」无浏览器边框）。
+- **会话导出为 Markdown**：会话行「导出」按钮 + 侧栏「导出全部会话」（见 `static/js/export.js`）。
+- **关键安全设计（修复上一版「挂服」）**：**取消服务内自重启**——旧实现用 `os._exit()` 杀掉自身再 spawn 新进程，一旦新进程没接管端口就会导致前端彻底无服务（表现为「127.0.0.1 拒绝连接」）。现改为：配置变更只写文件，由**重启程序 / 启动器**安全应用；启动器读取 `server.json` / `remote.json`，若旧前端仍在运行（按 `server-active.json` + `/_version` 校验 pid）则先结束再按新配置绑定；服务端绑定失败会**自动回退**到 8000 / 8001… 而不是退出。
+- **接口**：新增公开 `GET /api/_remote/status`、`POST /api/_login`、`POST /api/_logout`；本机专用 `GET/POST /api/_remote`、`GET/POST /api/_server`；`GET /api/_version` 增加 `port` / `lan` 字段供启动器判断配置是否一致。
+- **测试**：前端 51 项 + server 16 项全绿；另以「经本机局域网 IP 直连」端到端验证远程鉴权与最小权限（未登录 401、登录后 GET profile 200 / POST 403、管理接口 403、远程首页不下发本机 Cookie），并验证端口被占用时服务自动回退。
+- 生效方式：含 `server.py` / `release/launcher.py` 改动，**需重启本程序**（重新双击 exe）后 **Ctrl+F5**。
 
 ## v0.2.0 变更（首个对外候选版本）
 

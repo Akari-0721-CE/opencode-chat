@@ -1,11 +1,19 @@
 /* ============ 启动 ============ */
 async function boot() {
-  if (typeof startBootWatch === "function") startBootWatch();
   if (typeof applyI18n === "function") applyI18n();
   if (typeof initLangSeg === "function") initLangSeg();
-  if (typeof restoreProfile === "function") { try { await restoreProfile(); } catch (e) {} }
+  if (typeof initRemote === "function") {
+    const ready = await initRemote();
+    if (!ready) return;
+  }
+  if (typeof startBootWatch === "function") startBootWatch();
+  const remote = typeof isRemote === "function" && isRemote();
+  if (typeof restoreProfile === "function") { try { await restoreProfile(remote); } catch (e) {} }
   loadStore();
-  await Promise.all([loadModels(), loadAgents(), loadTools(), loadLocalSecrets()]);
+  await Promise.all([
+    loadModels(), loadAgents(), loadTools(),
+    remote ? Promise.resolve() : loadLocalSecrets(),
+  ]);
 
   let pathInfo = null;
   try { pathInfo = await api("/path", { noDir: true }); } catch (e) {}
@@ -13,7 +21,14 @@ async function boot() {
 
   try { if (typeof sweepHostingScratch === "function") await sweepHostingScratch(); } catch (e) {}
 
-  if (!S.assistants.length && typeof seedDefaultAssistant === "function") seedDefaultAssistant();
+  if (!S.assistants.length && !remote && typeof seedDefaultAssistant === "function") seedDefaultAssistant();
+  if (!S.assistants.length) {
+    renderTree();
+    showPlaceholder(remote
+      ? "未能从主机同步到助手，请确认主机端已创建助手并已开启远程访问。"
+      : "还没有助手，先新建一个吧");
+    return;
+  }
   if (!S.activeId || !S.assistants.some(a => a.id === S.activeId)) {
     S.activeId = S.assistants[0].id;
   }
@@ -23,9 +38,9 @@ async function boot() {
   await activateAssistant(S.activeId, { restore: true });
   connectEvents();
   loadBg();
-  if (typeof initProfileAutosave === "function") initProfileAutosave();
+  if (!remote && typeof initProfileAutosave === "function") initProfileAutosave();
   if (typeof initRangeFills === "function") initRangeFills();
-  if (typeof maybeShowOnboarding === "function") maybeShowOnboarding();
+  if (!remote && typeof maybeShowOnboarding === "function") maybeShowOnboarding();
 }
 boot().catch((e) => {
   console.error(e);

@@ -47,7 +47,19 @@ async function postPrompt(parts) {
 }
 
 let ocrSending = false;
+var sending = false;
+/* 去重：某些输入法 / 触屏事件会让回车或发送按钮在极短时间内触发两次，
+   导致同一条消息被重复 POST（表现为「助手答完后用户又自动发了一遍」）。
+   成功发送后短时间内屏蔽内容完全相同的再次发送。 */
+let lastSentKey = "";
+let lastSentAt = 0;
+const SEND_DEDUPE_MS = 1500;
+function sendSignature(text, atts) {
+  const sig = (atts || []).map(a => (a.name || "") + ":" + (a.size || 0) + ":" + String(a.dataUrl || "").length).join("|");
+  return text + "\u0000" + sig;
+}
 async function send() {
+  if (sending) return;
   if (typeof rpProxyRunning !== "undefined" && rpProxyRunning) return;
   const text = input.value.trim();
   if ((!text && !attachments.length) || !currentSession || busy || ocrSending) return;
@@ -56,60 +68,73 @@ async function send() {
     if (at.kind === "image" && a0 && a0.autoOcr) continue;
     if (!modelSupports(at.kind)) { showToast(unsupportedMsg(at.kind), true); return; }
   }
-  if (a0 && a0.autoOcr && attachments.some(at => at.kind === "image")) {
-    if (!ocrModelRef()) { showToast("已开启自动 OCR，但未配置 OCR 模型（设置 → 高级 → OCR 模型）", true); return; }
-    ocrSending = true;
-    sendBtn.disabled = true;
-    const snap = attachments.slice();
-    const imgCount = snap.filter(at => at.kind === "image").length;
-    if (typeof ocrProgressStart === "function") ocrProgressStart(imgCount);
-    let ok = false;
-    try {
-      const built = await buildOcrSendParts(snap, text, (done, total, name) => {
-        if (typeof ocrProgressStep === "function") ocrProgressStep(done, total, name);
-      });
-      const key = ocrDisplayKeyFromParts(built.parts);
-      if (key && built.images.length) {
-        try { await ocrImgPut(key, built.images); } catch (e) { /* 本地保留失败不阻塞发送 */ }
+  const sendKey = sendSignature(text, attachments);
+  const nowMs = Date.now();
+  if (sendKey === lastSentKey && nowMs - lastSentAt < SEND_DEDUPE_MS) return;
+  sending = true;
+  sendBtn.disabled = true;
+  if (typeof cancelDraftTimer === "function") cancelDraftTimer();
+  try {
+    if (a0 && a0.autoOcr && attachments.some(at => at.kind === "image")) {
+      if (!ocrModelRef()) { showToast("已开启自动 OCR，但未配置 OCR 模型（设置 → 高级 → OCR 模型）", true); return; }
+      ocrSending = true;
+      const snap = attachments.slice();
+      const imgCount = snap.filter(at => at.kind === "image").length;
+      if (typeof ocrProgressStart === "function") ocrProgressStart(imgCount);
+      let ok = false;
+      try {
+        const built = await buildOcrSendParts(snap, text, (done, total, name) => {
+          if (typeof ocrProgressStep === "function") ocrProgressStep(done, total, name);
+        });
+        const key = ocrDisplayKeyFromParts(built.parts);
+        if (key && built.images.length) {
+          try { await ocrImgPut(key, built.images); } catch (e) { /* 本地保留失败不阻塞发送 */ }
+        }
+        autoScroll = true;
+        await postPrompt(built.parts);
+        ok = true;
+        lastSentKey = sendKey;
+        lastSentAt = Date.now();
+      } catch (e) {
+        console.error(e);
+        appendNotice("自动 OCR 发送失败：" + e.message + "（内容已保留，可直接重试）", true);
+      } finally {
+        ocrSending = false;
+        if (typeof ocrProgressEnd === "function") ocrProgressEnd();
       }
-      autoScroll = true;
-      await postPrompt(built.parts);
-      ok = true;
+      if (!ok) return;
+      if (input.value.trim() === text) {
+        input.value = "";
+        if (currentSession) saveDraft(currentSession.id, "");
+      }
+      const sentOcrIds = new Set(snap.map(at => at.id));
+      attachments = attachments.filter(at => !sentOcrIds.has(at.id));
+      renderAttachments();
+      return;
+    }
+    const parts = attachments.map(at => ({ type: "file", mime: sendMimeFor(at.mime, at.name), filename: at.name, url: at.dataUrl }));
+    if (text) parts.push({ type: "text", text });
+    const sentIds = new Set(attachments.map(at => at.id));
+    autoScroll = true;
+    try {
+      await postPrompt(parts);
     } catch (e) {
       console.error(e);
-      appendNotice("自动 OCR 发送失败：" + e.message + "（内容已保留，可直接重试）", true);
-    } finally {
-      ocrSending = false;
-      if (typeof ocrProgressEnd === "function") ocrProgressEnd();
-      updateSendState();
+      appendNotice("发送失败：" + e.message + "（内容已保留，可直接重试）", true);
+      return;
     }
-    if (!ok) return;
+    lastSentKey = sendKey;
+    lastSentAt = Date.now();
     if (input.value.trim() === text) {
       input.value = "";
       if (currentSession) saveDraft(currentSession.id, "");
     }
-    const sentOcrIds = new Set(snap.map(at => at.id));
-    attachments = attachments.filter(at => !sentOcrIds.has(at.id));
+    attachments = attachments.filter(at => !sentIds.has(at.id));
     renderAttachments();
-    return;
+  } finally {
+    sending = false;
+    updateSendState();
   }
-  const parts = attachments.map(at => ({ type: "file", mime: at.mime, filename: at.name, url: at.dataUrl }));
-  if (text) parts.push({ type: "text", text });
-  const sentIds = new Set(attachments.map(at => at.id));
-  autoScroll = true;
-  try {
-    await postPrompt(parts);
-  } catch (e) {
-    console.error(e);
-    appendNotice("发送失败：" + e.message + "（内容已保留，可直接重试）", true);
-    return;
-  }
-  if (input.value.trim() === text) {
-    input.value = "";
-    if (currentSession) saveDraft(currentSession.id, "");
-  }
-  attachments = attachments.filter(at => !sentIds.has(at.id));
-  renderAttachments();
 }
 
 async function regenerate(assistantId) {
@@ -133,7 +158,7 @@ async function regenerate(assistantId) {
   const parts = [];
   for (const p of userMsg.parts || []) {
     if (p.type === "file" && p.url) {
-      parts.push({ type: "file", mime: p.mime, filename: p.filename, url: p.url });
+      parts.push({ type: "file", mime: sendMimeFor(p.mime, p.filename), filename: p.filename, url: p.url });
     } else if (p.type === "text" && !p.synthetic && p.text) {
       parts.push({ type: "text", text: p.text });
     }
@@ -212,7 +237,7 @@ async function editUserMessage(msgId) {
     const i = msgs.findIndex(m => m.info.id === msgId);
     if (i < 0) { appendNotice("找不到该消息，请刷新会话", true); return; }
     const fileParts = (msgs[i].parts || []).filter(p => p.type === "file" && p.url)
-      .map(p => ({ type: "file", mime: p.mime, filename: p.filename, url: p.url }));
+      .map(p => ({ type: "file", mime: sendMimeFor(p.mime, p.filename), filename: p.filename, url: p.url }));
     const parts = fileParts.slice();
     if (val) parts.push({ type: "text", text: val });
     if (!parts.length) { appendNotice("消息内容为空", true); return; }
@@ -256,9 +281,17 @@ async function stop() {
 
 sendBtn.onclick = send;
 stopBtn.onclick = stop;
+/* 输入法（中文等）组合期间的 Enter 只用于确认候选词，绝不能发送；
+   同时忽略按住 Enter 产生的自动重复，避免一次输入被连发多条。 */
+let imeComposing = false;
+input.addEventListener("compositionstart", () => { imeComposing = true; });
+input.addEventListener("compositionend", () => { imeComposing = false; });
 input.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && (e.ctrlKey || e.metaKey || (!e.shiftKey && !e.altKey))) {
+  if (e.key !== "Enter" || e.repeat) return;
+  if (e.isComposing || e.keyCode === 229 || imeComposing) return;
+  if (e.ctrlKey || e.metaKey || (!e.shiftKey && !e.altKey)) {
     e.preventDefault();
+    if (e.stopPropagation) e.stopPropagation();
     send();
   }
 });
@@ -270,7 +303,9 @@ function updateScrollBottom() {
   scrollBottomBtn.classList.toggle("show", !near && messagesEl.scrollHeight > messagesEl.clientHeight + 40);
 }
 messagesEl.addEventListener("scroll", () => {
-  autoScroll = nearBottom();
+  if (progScroll) { progScroll = false; updateScrollBottom(); return; }
+  lastUserScroll = Date.now();
+  autoScroll = atBottom();
   updateScrollBottom();
 });
 scrollBottomBtn.onclick = () => { autoScroll = true; scrollBottom(true); updateScrollBottom(); };

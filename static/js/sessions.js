@@ -85,11 +85,16 @@ function sessionRow(s, opts) {
   bFav.title = isFav ? "取消收藏" : "收藏此对话";
   bFav.appendChild(iconEl(isFav ? "starFill" : "star"));
   bFav.onclick = (e) => { e.stopPropagation(); toggleSessionFavorite(s); };
-  const bEdit = el("button", "mini-btn"); bEdit.title = "重命名"; bEdit.appendChild(iconEl("pencil"));
-  bEdit.onclick = (e) => { e.stopPropagation(); renameSession(s); };
-  const bDel = el("button", "mini-btn"); bDel.title = "删除（可在最近删除恢复）"; bDel.appendChild(iconEl("trash"));
-  bDel.onclick = (e) => { e.stopPropagation(); deleteSession(s); };
-  actions.append(bFav, bEdit, bDel);
+  const bExport = el("button", "mini-btn"); bExport.title = "导出为 Markdown"; bExport.appendChild(iconEl("down"));
+  bExport.onclick = (e) => { e.stopPropagation(); exportSessionMarkdown(s); };
+  actions.append(bFav, bExport);
+  if (!(typeof isRemote === "function" && isRemote())) {
+    const bEdit = el("button", "mini-btn"); bEdit.title = "重命名"; bEdit.appendChild(iconEl("pencil"));
+    bEdit.onclick = (e) => { e.stopPropagation(); renameSession(s); };
+    const bDel = el("button", "mini-btn"); bDel.title = "删除（可在最近删除恢复）"; bDel.appendChild(iconEl("trash"));
+    bDel.onclick = (e) => { e.stopPropagation(); deleteSession(s); };
+    actions.append(bEdit, bDel);
+  }
   li.appendChild(actions);
   syncAriaLabels(actions);
 
@@ -278,14 +283,14 @@ function resetMain() {
   sessionQuery = "";
   if ($("sessionSearch")) $("sessionSearch").value = "";
   messagesEl.innerHTML = "";
-  msgEls = {}; partEls = {}; dirtyMsgIds = new Set();
+  msgEls = {}; partEls = {}; dirtyMsgIds = new Set(); hiddenMsgIds = new Set();
   sessionMessages = []; sessionRenderStart = 0; loadEarlierEl = null;
   renderSessions([]);
   refreshAssistantChrome();
   showPlaceholder("还没有助手，先新建一个吧");
   clearAttachments();
   closeEvents();
-  input.disabled = true; sendBtn.disabled = true; stopBtn.disabled = true; attachBtn.disabled = true;
+  input.disabled = true; sendBtn.disabled = true; stopBtn.disabled = true; setAttachDisabled(true);
   if ($("ocrBtn")) $("ocrBtn").disabled = true;
   if (typeof updateProxyUI === "function") updateProxyUI();
 }
@@ -316,12 +321,12 @@ async function activateAssistant(id, opts = {}) {
   connectEvents();
   if (currentSession) saveDraft(currentSession.id, input.value);
   currentSession = null;
-  msgEls = {}; partEls = {}; dirtyMsgIds = new Set();
+  msgEls = {}; partEls = {}; dirtyMsgIds = new Set(); hiddenMsgIds = new Set();
   sessionMessages = []; sessionRenderStart = 0; loadEarlierEl = null;
   messagesEl.innerHTML = "";
   input.value = "";
   clearAttachments();
-  input.disabled = true; sendBtn.disabled = true; stopBtn.disabled = true; attachBtn.disabled = true;
+  input.disabled = true; sendBtn.disabled = true; stopBtn.disabled = true; setAttachDisabled(true);
   busy = false;
   saveStore();
   renderTree();
@@ -358,7 +363,7 @@ async function loadSessions(a) {
 
 function renderMessageHistory() {
   messagesEl.innerHTML = "";
-  msgEls = {}; partEls = {}; dirtyMsgIds = new Set();
+  msgEls = {}; partEls = {}; dirtyMsgIds = new Set(); hiddenMsgIds = new Set();
   loadEarlierEl = null;
   const msgs = sessionMessages || [];
   const limit = (typeof lowPerfEnabled === "function" && lowPerfEnabled()) ? LOW_PERF_RENDER_LIMIT : 0;
@@ -456,12 +461,12 @@ async function selectSession(id) {
   saveStore();
   refreshSessionList();
   messagesEl.innerHTML = "";
-  msgEls = {}; partEls = {}; dirtyMsgIds = new Set();
+  msgEls = {}; partEls = {}; dirtyMsgIds = new Set(); hiddenMsgIds = new Set();
   sessionMessages = []; sessionRenderStart = 0; loadEarlierEl = null;
   refreshSessionTokens();
   clearAttachments();
   input.disabled = false;
-  attachBtn.disabled = false;
+  setAttachDisabled(false);
   if ($("ocrBtn")) $("ocrBtn").disabled = false;
   sendBtn.disabled = busy;
   input.value = loadDraft(id);

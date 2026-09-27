@@ -39,6 +39,29 @@ function classify(mime) {
   return "text";
 }
 
+/* 文本类文件（json / csv / xml / 代码等）若按原 mime 作为 file part 发送，
+   opencode 只会对 text/plain 做「解码为文本」处理，其它文本 mime 会被当作
+   二进制附件，常被模型拒绝。统一归一到 text/plain 才能正常发送。 */
+const TEXT_APP_MIMES = new Set([
+  "application/json", "application/json5", "application/ld+json", "application/xml", "application/xhtml+xml",
+  "application/javascript", "application/x-javascript", "application/ecmascript",
+  "application/x-yaml", "application/yaml", "application/toml", "application/x-toml",
+  "application/x-sh", "application/x-httpd-php", "application/sql", "application/graphql",
+]);
+const TEXT_EXT_RE = /^(txt|text|md|markdown|json|json5|jsonc|ldjson|js|mjs|cjs|jsx|ts|tsx|css|scss|sass|less|html?|xhtml|xml|yaml|yml|toml|csv|tsv|log|ini|cfg|conf|config|env|properties|gradle|py|pyi|rb|go|rs|java|kt|kts|scala|lua|pl|php|cs|c|cc|cpp|cxx|h|hh|hpp|hxx|m|mm|swift|dart|r|jl|sql|sh|bash|zsh|bat|cmd|ps1|psm1|tex|vue|svelte|astro|gitignore|gitattributes|dockerfile|makefile|editorconfig)$/;
+function isTextLike(mime, name) {
+  const m = String(mime || "").toLowerCase().split(";")[0].trim();
+  if (m.startsWith("text/")) return true;
+  if (TEXT_APP_MIMES.has(m)) return true;
+  const ext = (typeof fileExt === "function") ? fileExt(name) : "";
+  return TEXT_EXT_RE.test(ext);
+}
+/* 图片 / PDF / 音视频保持原 mime；文本类统一 text/plain；其余保留原样。 */
+function sendMimeFor(mime, name) {
+  if (classify(mime) !== "text") return mime || "application/octet-stream";
+  return isTextLike(mime, name) ? "text/plain" : (mime || "application/octet-stream");
+}
+
 function currentModelRef() {
   const a = activeAssistant();
   if (a && a.model) return { providerID: a.model.providerID, modelID: a.model.id };
@@ -187,6 +210,12 @@ function renderAttachments() {
       };
       chip.appendChild(ocrBtn);
     }
+    if (at.kind !== "image" && typeof isAndroidApp === "function" && isAndroidApp()) {
+      const saveBtn = el("button", "a-ocr", "保存");
+      saveBtn.title = "保存 / 分享到手机";
+      saveBtn.onclick = (e) => { e.stopPropagation(); saveToPhone(at.dataUrl, at.name); };
+      chip.appendChild(saveBtn);
+    }
     const rm = el("button", "a-remove", "×");
     rm.title = "移除";
     rm.onclick = () => { attachments = attachments.filter(x => x.id !== at.id); renderAttachments(); };
@@ -286,7 +315,8 @@ function clearAttachments() {
 function updateSendState() {
   if (!currentSession) return;
   const ocrBusy = (typeof ocrSending !== "undefined") && ocrSending;
-  sendBtn.disabled = busy || ocrBusy || (!input.value.trim() && !attachments.length);
+  const inFlight = (typeof sending !== "undefined") && sending;
+  sendBtn.disabled = busy || ocrBusy || inFlight || (!input.value.trim() && !attachments.length);
 }
 
 attachBtn.onclick = () => fileInput.click();
@@ -326,8 +356,11 @@ input.addEventListener("input", () => {
   if (draftTimer) clearTimeout(draftTimer);
   draftTimer = setTimeout(() => { if (sid) saveDraft(sid, val); }, 300);
 });
-function flushDraft() {
+function cancelDraftTimer() {
   if (draftTimer) { clearTimeout(draftTimer); draftTimer = null; }
+}
+function flushDraft() {
+  cancelDraftTimer();
   if (currentSession) saveDraft(currentSession.id, input.value);
 }
 window.addEventListener("beforeunload", flushDraft);

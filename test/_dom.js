@@ -104,8 +104,9 @@ globalThis.getComputedStyle = () => ({ getPropertyValue: () => "" });
 
 const ORDER = [
   "i18n.js", "core.js", "profile.js", "state.js", "assistants.js", "sessions.js", "render.js",
-  "events.js", "attachments.js", "send.js", "proxy.js", "settings.js", "media.js",
-  "providers.js", "translate.js", "ocr.js", "favorites.js", "onboarding.js",
+  "export.js", "events.js", "attachments.js", "send.js", "proxy.js", "settings.js", "media.js",
+  "files.js", "medialib.js", "providers.js", "local.js", "translate.js", "ocr.js", "favorites.js", "outline.js", "onboarding.js",
+  "remote.js", "mobile.js",
 ];
 const JS_DIR = path.join(__dirname, "..", "static", "js");
 
@@ -113,15 +114,23 @@ const EXPORTS = [
   "modelKey", "parseModelKey", "uid", "escapeHtml", "avatarColor", "textHash", "turnKey",
   "fmtSendStamp", "withSendStamp", "splitSendStamp", "stampParts", "messageTextParts",
   "sanitizeFolderName", "uniqueWorkspace", "uniqueAssistantName", "normDir", "markDirUsed",
+  "workspaceTarget", "dirUnderBase",
   "classify", "fmtSize", "dataUrlSize", "fmtNum", "fmtCompact", "fmtCost", "tokenTotal",
+  "isTextLike", "sendMimeFor", "sendSignature", "partVisible", "messageVisible",
   "pickLatestAssistant", "hexToRgba", "accentPreset",
-  "fmtDurationMs", "parentPath", "searchSnippet", "escapeRe", "protectSegments", "restoreCode",
+  "fmtDurationMs", "partTiming", "sumPartTimings", "entryTotalMs", "parentPath", "searchSnippet", "escapeRe", "protectSegments", "restoreCode",
   "proxyTranscript", "pushError", "recentErrors", "isAuthErrorText", "isDarkMode", "canNotify",
   "applyProfileObject", "filterModelGroups",
   "sessionUpdated", "sessionDayStart", "sessionDayLabel", "fmtSessionTime", "groupSessionsByDay", "filterSessions",
   "isOcrModelName", "isVisionModel", "ocrDisplayKeyFromParts", "OCR_TEXT_PREFIX",
   "settingsQueryMatches", "lowPerfEnabled", "toolInfo", "renderQuality",
   "t", "currentLang", "setLang",
+  "mdFileName", "mdFence", "messageToMarkdown", "sessionToMarkdown",
+  "normalizeThemePref", "clampFontSize", "edgeSwipeIntent", "guessFileName", "isAndroidApp",
+  "fileExt", "isImageName", "fileMime", "favLabel",
+  "mediaKindOf", "mediaItemKey", "mediaItemsFromParts", "mediaFilter", "mediaArchiveSummary",
+  "outlineSnippet", "outlineItems",
+  "ggufAlias", "localRuntimeLabel", "localProgressText",
 ];
 
 let src = "";

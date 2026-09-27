@@ -69,6 +69,7 @@ function applySettingsFilter() {
   }
   const q = settingsSearchBox ? settingsSearchBox.value : "";
   const searching = !!String(q || "").trim();
+  if (typeof personalizeSearchSync === "function") personalizeSearchSync(searching);
   if (typeof moreToggle !== "undefined" && moreToggle && moreBody) {
     if (searching) {
       moreToggle.style.display = "none";
@@ -146,24 +147,101 @@ function fmtDurationMs(ms) {
   const r = Math.floor(s % 60);
   return m + "m" + String(r).padStart(2, "0") + "s";
 }
-function setDurationText(entry, text, live) {
-  let el = entry.el.querySelector(".msg-duration");
+/* 本轮结束点：模型结束工作，或（若被中止）用户下一次发送消息 */
+function nextUserCreatedAfter(messageId) {
+  if (typeof sessionMessages === "undefined" || !Array.isArray(sessionMessages)) return 0;
+  let found = false;
+  for (const m of sessionMessages) {
+    const inf = m && m.info;
+    if (!inf) continue;
+    if (!found) { if (inf.id === messageId) found = true; continue; }
+    if (inf.role === "user" && inf.time && inf.time.created) return inf.time.created;
+  }
+  return 0;
+}
+/* 墙钟总用时：起点为本轮助手消息创建时刻，终点为 turnEnd（模型结束/用户下次发送） */
+function entryTotalMs(entry, live, fallback) {
+  if (!entry || !entry.genStart) return fallback || 0;
+  if (live) return Math.max(0, Date.now() - entry.genStart);
+  if (entry.turnEnd) return Math.max(0, entry.turnEnd - entry.genStart);
+  return fallback || 0;
+}
+/* 分段用时：思考 / 调用 / 生成 —— 从消息分片时间戳汇总（纯函数，便于测试） */
+function partTiming(part) {
+  if (!part || !part.type) return null;
+  let kind = null;
+  if (part.type === "reasoning") kind = "think";
+  else if (part.type === "tool") kind = "tool";
+  else if (part.type === "text") kind = "gen";
+  else return null;
+  const tm = part.type === "tool" ? (part.state && part.state.time) : part.time;
+  if (!tm || !tm.start) return null;
+  return { kind: kind, start: tm.start, end: tm.end || 0 };
+}
+function sumPartTimings(map, now) {
+  const t = { think: 0, tool: 0, gen: 0, total: 0 };
+  let live = false;
+  for (const id in (map || {})) {
+    const p = map[id];
+    if (!p) continue;
+    const end = p.end || now;
+    if (!p.end) live = true;
+    const d = end - p.start;
+    if (d > 0) t[p.kind] += d;
+  }
+  t.total = t.think + t.tool + t.gen;
+  return { t: t, live: live };
+}
+function renderTiming(entry, live) {
+  if (!entry || !entry.el) return;
+  const res = sumPartTimings(entry.partTimes, live ? Date.now() : undefined);
+  const total = entryTotalMs(entry, live, res.t.total);
+  if (!total && !res.t.total) { const old = entry.el.querySelector(".msg-timing"); if (old) old.remove(); return; }
+  let el = entry.el.querySelector(".msg-timing");
   if (!el) {
     el = document.createElement("div");
-    el.className = "msg-duration";
+    el.className = "msg-timing";
     const tokens = entry.el.querySelector(".msg-tokens");
     if (tokens) entry.el.insertBefore(el, tokens);
     else entry.el.appendChild(el);
   }
-  el.textContent = "用时 " + text + (live ? "…" : "");
+  el.textContent = "思考 " + fmtDurationMs(res.t.think) + " · 调用 " + fmtDurationMs(res.t.tool) +
+    " · 生成 " + fmtDurationMs(res.t.gen) + " · 合计 " + fmtDurationMs(total) + (live ? "…" : "");
+  el.title = "本轮回复分段用时：思考 " + fmtDurationMs(res.t.think) + "，调用 " + fmtDurationMs(res.t.tool) +
+    "，生成 " + fmtDurationMs(res.t.gen) + "，合计 " + fmtDurationMs(total) + (live ? "（生成中）" : "");
+}
+function recordPartTiming(part) {
+  const entry = part && msgEls[part.messageID];
+  if (!entry || entry.role !== "assistant") return;
+  const rec = partTiming(part);
+  if (!rec) return;
+  if (!entry.partTimes) entry.partTimes = {};
+  entry.partTimes[part.id] = rec;
+  renderTiming(entry, (!!busy && !entry.genDone) || (!rec.end && !entry.turnEnd));
+  if (busy || !rec.end) ensureDurationTicker();
+}
+function freezeTiming(entry, end) {
+  if (!entry || !entry.partTimes) return;
+  const t = end || entry.turnEnd || Date.now();
+  let any = false;
+  for (const id in entry.partTimes) {
+    const p = entry.partTimes[id];
+    if (p && !p.end) { p.end = t; any = true; }
+  }
+  if (any) renderTiming(entry, false);
 }
 function tickDurations() {
   let activeStart = 0;
   for (const id in msgEls) {
     const entry = msgEls[id];
-    if (!entry || !entry.genLive || entry.genDone || !entry.genStart) continue;
-    setDurationText(entry, fmtDurationMs(Date.now() - entry.genStart), true);
-    activeStart = entry.genStart;
+    if (!entry) continue;
+    if (entry.genLive && !entry.genDone && entry.genStart) {
+      activeStart = entry.genStart;
+      renderTiming(entry, true);
+    } else if (entry.partTimes) {
+      const res = sumPartTimings(entry.partTimes, Date.now());
+      if (res.live) renderTiming(entry, true);
+    }
   }
   const gt = $("genTimer");
   if (gt) {
@@ -187,23 +265,51 @@ function updateDuration(info) {
   const entry = msgEls[info.id];
   if (!entry) return;
   entry.genStart = info.time.created;
+  if (!entry.partTimes) entry.partTimes = {};
   if (info.time.completed && info.time.completed >= info.time.created) {
     entry.genDone = true;
     entry.genLive = false;
-    setDurationText(entry, fmtDurationMs(info.time.completed - info.time.created), false);
+    entry.turnEnd = info.time.completed;
+    renderTiming(entry, false);
     tickDurations();
   } else {
     entry.genDone = false;
-    if (busy) { entry.genLive = true; ensureDurationTicker(); }
+    if (busy) { entry.genLive = true; entry.turnEnd = 0; renderTiming(entry, true); ensureDurationTicker(); }
   }
+}
+/* 历史消息：结束时点 = 模型结束工作，或（被中止时）用户下一次发送消息 */
+function applyHistoryTiming(info) {
+  if (!info || info.role !== "assistant") return;
+  const entry = msgEls[info.id];
+  if (!entry) return;
+  if (!entry.partTimes) entry.partTimes = {};
+  if (info.time && info.time.created && !entry.genStart) entry.genStart = info.time.created;
+  if (info.time && info.time.completed) {
+    entry.turnEnd = info.time.completed;
+    entry.genDone = true;
+    entry.genLive = false;
+    freezeTiming(entry, entry.turnEnd);
+  } else if (!busy) {
+    let end = nextUserCreatedAfter(info.id);
+    if (!end) { for (const id in entry.partTimes) { const p = entry.partTimes[id]; if (p && p.end > end) end = p.end; } }
+    if (!end) end = entry.genStart;
+    if (end && !entry.turnEnd) {
+      entry.turnEnd = end;
+      entry.genDone = true;
+      entry.genLive = false;
+      freezeTiming(entry, end);
+    }
+  }
+  renderTiming(entry, false);
 }
 function finalizeDurations() {
   for (const id in msgEls) {
     const entry = msgEls[id];
-    if (!entry || !entry.genLive || entry.genDone) continue;
-    entry.genDone = true;
-    entry.genLive = false;
-    setDurationText(entry, fmtDurationMs(Date.now() - entry.genStart), false);
+    if (!entry) continue;
+    if (entry.genLive && !entry.genDone && entry.genStart && !entry.turnEnd) entry.turnEnd = Date.now();
+    freezeTiming(entry, entry.turnEnd);
+    if (entry.genLive && !entry.genDone) { entry.genDone = true; entry.genLive = false; }
+    renderTiming(entry, false);
   }
   tickDurations();
 }
@@ -340,7 +446,7 @@ function updateCtxRing() {
   let ratio = 0, color = "var(--accent)";
   if (s.limit > 0 && s.used > 0) {
     ratio = Math.min(1, s.used / s.limit);
-    if (ratio >= 0.9) color = "#d93025"; else if (ratio >= 0.7) color = "#f0a020";
+    if (ratio >= 0.9) color = "var(--danger)"; else if (ratio >= 0.7) color = "var(--warn)";
   }
   arc.style.stroke = color;
   arc.style.strokeDasharray = CTX_RING_C.toFixed(2);
@@ -610,11 +716,42 @@ if ($("cleanupOpen")) $("cleanupOpen").onclick = () => { renderCleanupList(); $(
 if ($("cleanupClose")) $("cleanupClose").onclick = () => $("cleanupMask").classList.remove("show");
 if ($("cleanupMask")) $("cleanupMask").addEventListener("click", (e) => { if (e.target === $("cleanupMask")) $("cleanupMask").classList.remove("show"); });
 
+/* ============ 个性化二级菜单 ============ */
+function personalizeOpen() {
+  return document.body.classList.contains("personalize");
+}
+function applyPersonalize(open) {
+  const group = $("personalizeGroup");
+  const btn = $("personalizeToggle");
+  document.body.classList.toggle("personalize", !!open);
+  if (group) group.hidden = !open;
+  if (btn) btn.setAttribute("aria-expanded", open ? "true" : "false");
+  try { localStorage.setItem("oc_personalize", open ? "1" : "0"); } catch (e) { /* ignore */ }
+}
+if ($("personalizeToggle")) {
+  $("personalizeToggle").onclick = () => applyPersonalize(!personalizeOpen());
+  applyPersonalize(localStorage.getItem("oc_personalize") === "1");
+}
+/* 搜索时自动展开个性化分组（与高级设置一致） */
+function personalizeSearchSync(searching) {
+  const btn = $("personalizeToggle");
+  if (!btn) return;
+  if (searching) {
+    btn.style.display = "none";
+    const group = $("personalizeGroup");
+    if (group) group.hidden = false;
+    document.body.classList.add("personalize");
+  } else {
+    btn.style.display = "";
+    applyPersonalize(personalizeOpen());
+  }
+}
+
 /* ============ 渲染质量 ============ */
 const QUALITY_HINTS = {
   low: "关闭毛玻璃、界面动画与动态背景动画；长会话只先渲染最近消息（可点「加载更早」）。最省资源，不影响对话功能。",
   standard: "默认观感：毛玻璃与基础动效，动态背景正常播放。",
-  high: "立体毛玻璃 + 悬停/入场动画 + 顶栏/侧栏流光 + 消息收发动效，最华丽；较耗性能，低配机建议用「标准」。",
+  high: "立体毛玻璃 + 水光折射/色散 + 悬停/入场动画 + 顶栏/侧栏流光 + 消息收发动效，最华丽；较耗性能，低配机建议用「标准」。",
 };
 function renderQualityUI() {
   const q = typeof renderQuality === "function" ? renderQuality() : "standard";

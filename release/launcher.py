@@ -48,7 +48,43 @@ OPENCODE_PLUGIN_AUTO = os.path.join(OPENCODE_CONFIG, "plugins")
 OPENCODE_PLUGIN_COMPAT = os.path.join(OPENCODE_CONFIG, "plugin")
 OPENCODE_CONFIG_FILE = os.path.join(OPENCODE_CONFIG, "opencode.jsonc")
 
-FRONT_PORT = int(os.environ.get("FRONT_PORT", "8000"))
+SERVER_CONF = os.path.join(DATA_DIR, "server.json")
+REMOTE_CONF = os.path.join(DATA_DIR, "remote.json")
+ACTIVE_FILE = os.path.join(DATA_DIR, "server-active.json")
+
+
+def _read_json(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def configured_front_port():
+    """端口来源优先级：环境变量 FRONT_PORT > server.json > 8000。"""
+    env = os.environ.get("FRONT_PORT", "").strip()
+    if env:
+        try:
+            return int(env)
+        except ValueError:
+            pass
+    try:
+        p = int(_read_json(SERVER_CONF).get("port") or 0)
+        if 1 <= p <= 65535:
+            return p
+    except Exception:
+        pass
+    return 8000
+
+
+def remote_enabled():
+    cfg = _read_json(REMOTE_CONF)
+    return bool(cfg.get("enabled")) and bool(cfg.get("password"))
+
+
+FRONT_PORT = configured_front_port()
 OPENCODE_PORT = int(os.environ.get("OPENCODE_PORT", "4096"))
 
 
@@ -341,6 +377,111 @@ def install_opencode():
 EXTRA_CA_PEM = os.path.join(DATA_DIR, "node-extra-ca.pem")
 
 
+def _broadcast_env_change():
+    try:
+        HWND_BROADCAST = 0xFFFF
+        WM_SETTINGCHANGE = 0x001A
+        SMTO_ABORTIFHUNG = 0x0002
+        result = ctypes.c_ulong()
+        ctypes.windll.user32.SendMessageTimeoutW(
+            HWND_BROADCAST, WM_SETTINGCHANGE, 0,
+            ctypes.c_wchar_p("Environment"), SMTO_ABORTIFHUNG, 5000,
+            ctypes.byref(result),
+        )
+    except Exception:
+        pass
+
+
+def persist_user_env(name, value):
+    """把环境变量写入当前用户持久环境（HKCU\\Environment）。
+
+    仅设置启动器子进程的环境不够：用户手动执行 `opencode serve` 时不会带上
+    证书，于是「unknown certificate verification error」反复出现。写入持久
+    用户环境并广播 WM_SETTINGCHANGE 后，之后新起的 opencode 都会自动继承。
+    """
+    if not IS_WIN or not name or not value:
+        return
+    key = None
+    try:
+        import winreg
+        key = winreg.CreateKeyEx(
+            winreg.HKEY_CURRENT_USER, "Environment", 0,
+            winreg.KEY_SET_VALUE | winreg.KEY_QUERY_VALUE,
+        )
+        try:
+            cur = winreg.QueryValueEx(key, name)[0]
+        except OSError:
+            cur = None
+        if cur != value:
+            winreg.SetValueEx(key, name, 0, winreg.REG_SZ, value)
+            _broadcast_env_change()
+            log("已写入用户环境变量 %s" % name)
+    except Exception as e:
+        log("写入用户环境变量 %s 失败: %r" % (name, e))
+    finally:
+        if key is not None:
+            try:
+                winreg.CloseKey(key)
+            except Exception:
+                pass
+
+
+def _proc_command_line(pid):
+    """返回本机进程命令行（Windows；不可用时返回空串）。"""
+    if not IS_WIN or not pid:
+        return ""
+    try:
+        ps = os.path.join(
+            os.environ.get("SystemRoot", r"C:\Windows"),
+            "System32", "WindowsPowerShell", "v1.0", "powershell.exe",
+        )
+        exe = ps if os.path.isfile(ps) else "powershell"
+        out = subprocess.run(
+            [exe, "-NoProfile", "-NonInteractive", "-Command",
+             "(Get-CimInstance Win32_Process -Filter 'ProcessId=%d').CommandLine" % int(pid)],
+            creationflags=CREATE_NO_WINDOW, capture_output=True, text=True, timeout=15,
+        ).stdout or ""
+        for ln in out.splitlines():
+            ln = ln.strip()
+            if ln:
+                return ln
+    except Exception:
+        pass
+    return ""
+
+
+def opencode_is_managed(pid):
+    """4096 上的进程是否为本程序拉起的 opencode（带 --hostname 与证书环境）。"""
+    if not pid:
+        return True
+    image = _proc_image(pid)
+    if not image or "opencode" not in image.lower():
+        return True
+    cmd = _proc_command_line(pid)
+    if not cmd:
+        return True
+    return "--hostname" in cmd
+
+
+def ensure_managed_opencode(exe):
+    """若 4096 上已运行的 opencode 不是本程序拉起的，则重启它以注入证书环境。
+
+    否则手工 / 旧启动器拉起的 opencode 缺少 NODE_EXTRA_CA_CERTS，模型调用会报
+    「unknown certificate verification error」并反复出现。
+    """
+    pid = pid_listening(OPENCODE_PORT)
+    if not pid or opencode_is_managed(pid):
+        return
+    log("检测到 4096 上非本程序拉起的 opencode，重启以注入证书环境")
+    kill_pid(pid)
+    for _ in range(40):
+        if not port_open(OPENCODE_PORT):
+            break
+        time.sleep(0.25)
+    start_opencode(exe)
+    wait_port(OPENCODE_PORT, 25, "opencode")
+
+
 def ensure_extra_ca_certs(env):
     """把 Windows 受信任根证书导出为 PEM，供 Node/Bun（opencode）使用。
 
@@ -349,7 +490,10 @@ def ensure_extra_ca_certs(env):
     报「unknown certificate verification error」。这里把系统根证书并入
     NODE_EXTRA_CA_CERTS，使 opencode 能正常完成 TLS 校验。
     """
-    if env.get("NODE_EXTRA_CA_CERTS") or not IS_WIN:
+    if not IS_WIN:
+        return
+    existing = env.get("NODE_EXTRA_CA_CERTS")
+    if existing and os.path.abspath(existing) != os.path.abspath(EXTRA_CA_PEM):
         return
     try:
         import ssl
@@ -368,9 +512,12 @@ def ensure_extra_ca_certs(env):
         if not pems:
             return
         os.makedirs(DATA_DIR, exist_ok=True)
-        with open(EXTRA_CA_PEM, "w", encoding="ascii") as f:
+        tmp = EXTRA_CA_PEM + ".tmp"
+        with open(tmp, "w", encoding="ascii") as f:
             f.write("".join(pems))
+        os.replace(tmp, EXTRA_CA_PEM)
         env["NODE_EXTRA_CA_CERTS"] = EXTRA_CA_PEM
+        persist_user_env("NODE_EXTRA_CA_CERTS", EXTRA_CA_PEM)
         log("已导出系统根证书 -> NODE_EXTRA_CA_CERTS (%d 张)" % len(pems))
     except Exception as e:
         log("导出系统根证书失败: %r" % e)
@@ -457,19 +604,43 @@ def pick_free_port(start, tries=20):
     return None
 
 
+def stop_previous_front():
+    """结束本程序上次运行的前端（可能仍在旧端口），以便按新配置重新绑定。"""
+    rec = _read_json(ACTIVE_FILE)
+    try:
+        port = int(rec.get("port") or 0)
+    except Exception:
+        port = 0
+    pid = rec.get("pid")
+    if not port:
+        return
+    ver = http_get_json("http://127.0.0.1:%d/api/_version" % port)
+    if ver and pid and ver.get("pid") == pid:
+        log("结束旧前端 (pid=%s :%d)" % (pid, port))
+        kill_pid(pid)
+        for _ in range(30):
+            if not port_open(port):
+                break
+            time.sleep(0.2)
+
+
 def start_front():
     global FRONT_PORT
     cur = app_version()
+    want_lan = remote_enabled()
     info = http_get_json("http://127.0.0.1:%d/api/_version" % FRONT_PORT)
-    if info and info.get("version") == cur:
-        log("前端已在运行 (v%s)，复用" % cur)
+    if info and info.get("version") == cur and bool(info.get("lan")) == want_lan:
+        log("前端已在运行且配置一致 (v%s)，复用" % cur)
         return None
+    # 版本 / 端口 / 局域网配置有变：先停掉本程序旧前端（可能仍在旧端口）
+    stop_previous_front()
     if port_open(FRONT_PORT):
+        info = http_get_json("http://127.0.0.1:%d/api/_version" % FRONT_PORT)
         pid = (info or {}).get("pid") or pid_listening(FRONT_PORT)
         image = _proc_image(pid) if pid else None
         if pid and image and _under(image, ROOT):
-            log("检测到本程序旧前端 (pid=%s, v%r)，结束并升级到 v%s"
-                % (pid, (info or {}).get("version"), cur))
+            log("检测到本程序旧前端 (pid=%s, v%r)，结束并以新配置重启"
+                % (pid, (info or {}).get("version")))
             kill_pid(pid)
             for _ in range(30):
                 if not port_open(FRONT_PORT):
@@ -558,6 +729,8 @@ def main():
         if not port_open(OPENCODE_PORT):
             start_opencode(exe)
             wait_port(OPENCODE_PORT, 25, "opencode")
+        else:
+            ensure_managed_opencode(exe)
     else:
         write_status(state="preparing")
         log("未找到 opencode，将在打开界面后尝试自动安装")
